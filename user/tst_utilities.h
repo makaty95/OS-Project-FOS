@@ -18,6 +18,7 @@ int check_block(void* va, void* expectedVA, uint32 expectedSize, uint8 expectedF
 		cprintf("wrong block address. Expected %x, Actual %x\n", expectedVA, va);
 		return 0;
 	}
+	//cprintf("%x, expected header = %p, expected footer = %p, exp size: %u\n", va, ((uint32*)va)-1, (uint32*)(va + expectedSize - 8), expectedSize);
 	//Check header & footer
 	uint32 header = *((uint32*)va-1);
 	uint32 footer = *((uint32*)(va + expectedSize - 8));

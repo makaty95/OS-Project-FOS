@@ -52,6 +52,10 @@ unsigned int _ModifiedBufferLength;
 #define ENV_EXIT		5
 #define ENV_UNKNOWN		6
 
+#define FREE_PAGE			0
+#define PAGE_MARKED 		1
+#define PAGE_MARK_START 	2
+
 LIST_HEAD(Env_Queue, Env);		// Declares 'struct Env_Queue'
 LIST_HEAD(Env_list, Env);		// Declares 'struct Env_list'
 
@@ -68,6 +72,7 @@ struct WorkingSetElement {
 	//2020
 	LIST_ENTRY(WorkingSetElement) prev_next_info;	// list link pointers
 };
+
 
 //2020
 LIST_HEAD(WS_List, WorkingSetElement);		// Declares 'struct WS_list'
@@ -95,6 +100,9 @@ struct Context {
   uint32 eip;
 };
 
+
+
+
 struct Env {
 	//================
 	/*MAIN INFO...*/
@@ -121,17 +129,31 @@ struct Env {
 
 	//=======================================================================
 	//TODO: [PROJECT'24.MS2 - #10] [3] USER HEAP - add suitable code here
-
 	//=======================================================================
+	uint32 start;
+	uint32 sbreak;
+	uint32 hlimit;
+	uint32 end_bound;
+	uint32 pgalloc_last;
+
+
+	void* returned_address;
+	void* shr_returned_address;
+	void* get_shr_returned_address;
+
 	//for page file management
 	uint32* disk_env_pgdir;
 	//2016
 	unsigned int disk_env_pgdir_PA;
 
-	//for table file management
+	// 00000000 00000000 000000 00 00000000
+	// 00000000 00000000 000000 00 00000001
+
+	// for table file management
 	uint32* disk_env_tabledir;
 	//2016
 	unsigned int disk_env_tabledir_PA;
+
 
 	//================
 	/*WORKING SET*/
@@ -139,7 +161,7 @@ struct Env {
 	//page working set management
 	unsigned int page_WS_max_size;					//Max allowed size of WS
 #if USE_KHEAP
-	struct WS_List page_WS_list ;					//List of WS elements
+	struct WS_List page_WS_list;					//List of WS elements
 	struct WorkingSetElement* page_last_WS_element;	//ptr to last inserted WS element
 #else
 	struct WorkingSetElement ptr_pageWorkingSet[__PWS_MAX_SIZE];
@@ -181,6 +203,9 @@ struct Env {
 	//2020
 	uint32 nPageIn, nPageOut, nNewPageAdded;
 	uint32 nClocks ;
+
+	uint32 sharedObjectsCounter;
+
 
 };
 

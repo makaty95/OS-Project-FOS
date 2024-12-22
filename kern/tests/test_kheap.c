@@ -18,7 +18,7 @@
 #define INITIAL_BLOCK_ALLOCATIONS ((2*sizeof(int) + MAX(num_of_ready_queues * sizeof(uint8), DYN_ALLOC_MIN_BLOCK_SIZE)) + (2*sizeof(int) + MAX(num_of_ready_queues * sizeof(struct Env_Queue), DYN_ALLOC_MIN_BLOCK_SIZE)))
 #define ACTUAL_START ((KERNEL_HEAP_START + DYN_ALLOC_MAX_SIZE + PAGE_SIZE) + INITIAL_KHEAP_ALLOCATIONS)
 
-extern uint32 sys_calculate_free_frames() ;
+extern uint32 sys_calculate_free_frames();
 extern void sys_bypassPageFault(uint8);
 extern uint32 sys_rcr2();
 extern int execute_command(char *command_string);

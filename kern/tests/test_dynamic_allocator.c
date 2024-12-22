@@ -36,6 +36,7 @@ int check_block(void* va, void* expectedVA, uint32 expectedSize, uint8 expectedF
 		return 0;
 	}
 	//Check header & footer
+	cprintf("%x\n", va);
 	uint32 header = *((uint32*)va-1);
 	uint32 footer = *((uint32*)(va + expectedSize - 8));
 	uint32 expectedData = expectedSize | expectedFlag ;

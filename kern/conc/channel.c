@@ -65,7 +65,7 @@ void wakeup_one(struct Channel *chan)
 
 	acquire_spinlock(mylock);
 	if(queue_size(q) > 0) {
-		sched_insert_ready0(dequeue(q));
+		sched_insert_ready(dequeue(q));
 	}
 
 	release_spinlock(mylock);
@@ -91,7 +91,7 @@ void wakeup_all(struct Channel *chan) //D
 	//init_spinlock(mylock,"mylock");
 	acquire_spinlock(mylock);
 	while(q->lh_last != NULL) {
-		sched_insert_ready0(dequeue(q));
+		sched_insert_ready(dequeue(q));
 	}
 	release_spinlock(mylock);
 

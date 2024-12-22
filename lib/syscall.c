@@ -330,3 +330,22 @@ void sys_allocate_user_mem(uint32 virtual_address, uint32 size)
 	//////////////////////////////////// makaty
 }
 
+void sys_env_set_priority(int32 envID, int priority)
+{
+	syscall(SYS_env_set_priority, envID, priority, 0, 0, 0);
+	return;
+}
+void sys_initializeTheQueue(struct Env_Queue* theQueue) {
+    syscall(SYS_initializeTheQueue, (uint32)theQueue, 0, 0, 0, 0);
+}
+
+void sys_sleepOnSemaphore(struct semaphore* theSemaphore) {
+
+    syscall(SYS_sleepOnSemaphore, (uint32)theSemaphore, 0, 0, 0, 0);
+}
+
+void sys_signalToSemaphore(struct semaphore* theSemaphore) {
+
+    syscall(SYS_signalToSemaphore, (uint32)theSemaphore, 0, 0, 0, 0);
+}
+

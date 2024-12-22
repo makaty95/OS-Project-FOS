@@ -166,9 +166,9 @@
 #define USER_PAGES_WS_MAX (USER_PAGES_WS_START + sizeof(struct WorkingSetElement) * USER_TOP/PAGE_SIZE)
 
 #define USTACKBOTTOM (ROUNDUP(USER_PAGES_WS_MAX, PAGE_SIZE))
+#define PGFLTEMP (UTEMP-PAGE_SIZE)
 
-
-//2022
+//2022S
 #define USER_DYN_BLKS_ARRAY 0 //(ROUNDDOWN(USER_HEAP_START - (sizeof(struct MemBlock) * NUM_OF_UHEAP_PAGES), PAGE_SIZE) - PAGE_SIZE)
 
 #ifndef __ASSEMBLER__
@@ -181,7 +181,7 @@
  * One result of treating the page directory as a page table is that all page_table_entries
  * can be accessed through a "virtual page table" at virtual address VPT (to
  * which vpt is set in entry.S).  The page_table_entry for page number N is stored in
- * vpt[N].  (It's worth drawing a diagram of this!)
+ * vpt[N].  (It' worth drawing a diagram of this!)
  *
  * A second consequence is that the contents of the current page directory
  * will always be available at virtual address (VPT + (VPT >> PGSHIFT)), to
@@ -213,8 +213,6 @@ struct FrameInfo {
 	// frames allocated at boot time using memory_manager.c's
 	// boot_allocate_space do not have valid reference count fields.
 	uint16 references;
-
-	uint32 va_page_num; // the page number in VM
 
 	struct Env *proc;
 	uint32 bufferedVA;

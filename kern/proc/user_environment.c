@@ -1,5 +1,6 @@
 /* See COPYRIGHT for copyright information. */
 
+
 #include <inc/x86.h>
 #include <inc/mmu.h>
 #include <inc/error.h>
@@ -20,7 +21,7 @@
 #include "../mem/memory_manager.h"
 #include "../mem/shared_memory_manager.h"
 
-
+#define cprintf //
 /******************************/
 /* DATA & DECLARATIONS */
 /******************************/
@@ -463,12 +464,93 @@ void env_start(void)
 void env_free(struct Env *e)
 {
 	/*REMOVE THIS LINE BEFORE START CODING*/
-	return;
+	//return;
 	/**************************************/
 
 	//[PROJECT'24.MS3] BONUS [EXIT ENV] env_free
 	// your code is here, remove the panic and write your code
-	panic("env_free() is not implemented yet...!!");
+	//panic("env_free() is not implemented yet...!!");
+
+	//step 1 remove working set elements and workingset itself
+//	struct WorkingSetElement* it =NULL;
+//	LIST_FOREACH(it ,&e->page_WS_list){
+//            unmap_frame(&e->env_page_directory ,(uint32) it);
+//	}
+//
+//	//step 2 delete working set itself
+//	unmap_frame(&e->env_page_directory ,(uint32) e->page_WS_list);
+//
+//	//step 3 all page tables in the entire user virtual memory
+//	uint32 start_user =e->start;
+//	uint32 *ptr_page_table = NULL;
+//	struct FrameInfo* frame_info_ptr = get_frame_info(e->env_page_directory, start_user, &ptr_page_table);
+//
+//	while(start_user<e->sbreak){
+//
+//		struct FrameInfo* frame_info_ptr = get_frame_info(e->env_page_directory, start_user, &ptr_page_table);
+//		if(frame_info_ptr != NULL) {
+//
+//			unmap_frame(e->env_page_directory, start_user);
+//		}
+//
+//		int empty = 1;
+//		for(int i = 0 ;i<1024 ; i++)
+//		{
+//			if(ptr_page_table[i]!=0){
+//
+//				empty=0;
+//				break;
+//			}
+//		}
+//
+//		if(empty){
+//
+//			struct FrameInfo* frame_info_ptr = get_frame_info(e->env_page_directory, (uint32)ptr_page_table, &ptr_page_table);
+//			free_frame(frame_info_ptr);
+//			pd_clear_page_dir_entry(e->env_page_directory,(uint32)start_user);
+//		}
+//
+//		start_user+=PAGE_SIZE;
+//	}
+//
+//
+//	 start_user =e->hlimit+PAGE_SIZE;
+//	 *ptr_page_table = NULL;
+//	 frame_info_ptr = get_frame_info(e->env_page_directory, start_user, &ptr_page_table);
+//
+//	while(start_user<USER_HEAP_MAX){
+//		struct FrameInfo* frame_info_ptr = get_frame_info(e->env_page_directory, start_user, &ptr_page_table);
+//		if(frame_info_ptr != NULL) {
+//
+//			unmap_frame(e->env_page_directory, start_user);
+//		}
+//
+//		int empty = 1;
+//		for(int i = 0 ;i<1024 ; i++)
+//		{
+//			if(ptr_page_table[i]!=0){
+//
+//				empty=0;
+//				break;
+//			}
+//		}
+//
+//		if(empty){
+//
+//			struct FrameInfo* frame_info_ptr = get_frame_info(e->env_page_directory, (uint32)ptr_page_table, &ptr_page_table);
+//			free_frame(frame_info_ptr);
+//			pd_clear_page_dir_entry(e->env_page_directory,(uint32)start_user);
+//		}
+//
+//		start_user+=PAGE_SIZE;
+//	}
+//
+//	//step 4 directory table
+//	struct FrameInfo* frame_info_ptr = get_frame_info(e->env_page_directory, (uint32)e->env_page_directory, &ptr_page_table);
+//	free_frame(frame_info_ptr);
+//	free_frame(frame_info_ptr);
+//	//step 5 user kernel stack
+
 
 
 	// [9] remove this program from the page file
@@ -862,27 +944,52 @@ uint32 __cur_k_stk = KERNEL_HEAP_START;
 //===========================================================
 // 5) ALLOCATE SPACE FOR USER KERNEL STACK (One Per Process):
 //===========================================================
-void* create_user_kern_stack(uint32* ptr_user_page_directory)
-{
+void* create_user_kern_stack(uint32* ptr_user_page_directory) {
 #if USE_KHEAP
-	//TODO: [PROJECT'24.MS2 - #07] [2] FAULT HANDLER I - create_user_kern_stack
-	// Write your code here, remove the panic and write your code
-	panic("create_user_kern_stack() is not implemented yet...!!");
 
-	//allocate space for the user kernel stack.
-	//remember to leave its bottom page as a GUARD PAGE (i.e. not mapped)
-	//return a pointer to the start of the allocated space (including the GUARD PAGE)
-	//On failure: panic
+    //TODO: [PROJECT'24.MS2 - #07] [2] FAULT HANDLER I - create_user_kern_stack
+    // Write your code here, remove the panic and write your code
+    //panic("create_user_kern_stack() is not implemented yet...!!");
+
+	//cprintf("---------------create_user_kern_stack called----------------- \n");
+    void* kernel_stack = kmalloc(KERNEL_STACK_SIZE);//allocate memory in kernel space
+    if(kernel_stack == NULL) {
+        panic("allocation failed for kernel stack\n");
+    }
+
+    //cprintf("ksva: %p  |  %d\n", kernel_stack, (uint32)kernel_stack);
+
+    uint32 *page_table = NULL;
+    int status = get_page_table(ptr_user_page_directory, (uint32)kernel_stack, &page_table);
+
+
+    if (status != TABLE_IN_MEMORY) {
+    	page_table = create_page_table(ptr_user_page_directory, (uint32)kernel_stack);
+    	//cprintf("error404, see stack function\n");
+    }
+
+    //page_table[PTX(kernel_stack)] = page_table[PTX(kernel_stack)] & (~PERM_PRESENT);
+	pt_set_page_permissions(ptr_user_page_directory, (uint32)kernel_stack, 0, PERM_PRESENT);
+
+	unmap_frame(ptr_user_page_directory, (uint32)kernel_stack);
+
+    return kernel_stack;
+
+    //allocate space for the user kernel stack.
+    //remember to leave its bottom page as a GUARD PAGE (i.e. not mapped)
+    //return a pointer to the start of the allocated space (including the GUARD PAGE)
+    //On failure: panic
 
 
 #else
-	if (KERNEL_HEAP_MAX - __cur_k_stk < KERNEL_STACK_SIZE)
-		panic("Run out of kernel heap!! Unable to create a kernel stack for the process. Can't create more processes!");
-	void* kstack = (void*) __cur_k_stk;
-	__cur_k_stk += KERNEL_STACK_SIZE;
-	return kstack ;
-//	panic("KERNEL HEAP is OFF! user kernel stack is not supported");
+    if (KERNEL_HEAP_MAX - __cur_k_stk < KERNEL_STACK_SIZE)
+        panic("Run out of kernel heap!! Unable to create a kernel stack for the process. Can't create more processes!");
+    void* kstack = (void*) __cur_k_stk;
+    __cur_k_stk += KERNEL_STACK_SIZE;
+    return kstack ;
+//    panic("KERNEL HEAP is OFF! user kernel stack is not supported");
 #endif
+
 }
 
 /*2024*/
@@ -912,6 +1019,19 @@ void initialize_uheap_dynamic_allocator(struct Env* e, uint32 daStart, uint32 da
 	//	1) there's no initial allocations for the dynamic allocator of the user heap (=0)
 	//	2) call the initialize_dynamic_allocator(..) to complete the initialization
 	//panic("initialize_uheap_dynamic_allocator() is not implemented yet...!!");
+
+	//dynalloc
+	//cprintf("init start: %x, init limit: %x\n", daStart, daLimit);
+	e->start = daStart;
+	e->sbreak = daStart;
+	e->hlimit = daLimit;
+
+	//page alloc
+	e->pgalloc_last = daLimit + PAGE_SIZE;
+
+	//memset(e->mark_status, PAGE_FREE, sizeof(e->mark_status));
+	initialize_dynamic_allocator(daStart, 0);
+
 }
 
 //==============================================================

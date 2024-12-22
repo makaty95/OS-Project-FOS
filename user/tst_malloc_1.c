@@ -60,12 +60,13 @@ void _main(void)
 	int expectedNumOfFrames, actualNumOfFrames;
 	cprintf("\n%~[1] Allocate spaces of different sizes in PAGE ALLOCATOR and write some data to them [70%]\n");
 	void* ptr_allocations[20] = {0};
+	cprintf("hello :)\n");
 	{
 		//cprintf("3\n");
 		//2 MB
 		{
 			freeFrames = sys_calculate_free_frames() ;
-			usedDiskPages = sys_pf_calculate_allocated_pages() ;
+			usedDiskPages = sys_pf_calculate_allocated_pages();
 			ptr_allocations[0] = malloc(2*Mega-kilo);
 			if ((uint32) ptr_allocations[0] != (pagealloc_start)) {is_correct = 0; cprintf("1 Wrong start address for the allocated space... \n");}
 			expectedNumOfFrames = 1 /*table*/ ;

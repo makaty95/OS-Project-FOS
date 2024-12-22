@@ -56,6 +56,12 @@ enum
 	SYS_free_user_mem,
 	SYS_allocate_user_mem,
 	// makaty
+	// zaid
+	SYS_env_set_priority,
+	// zaid
+	SYS_initializeTheQueue,
+	SYS_sleepOnSemaphore,
+	SYS_signalToSemaphore,
 
 	//=====================================================================
 	NSYSCALLS

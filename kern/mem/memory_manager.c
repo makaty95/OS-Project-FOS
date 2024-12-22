@@ -9,6 +9,7 @@ FUNCTIONS:	to_physical_address, get_frame_info, tlb_invalidate
 =====================================================================================================================================================================================================
  */
 
+
 #include "memory_manager.h"
 
 #include <inc/x86.h>
@@ -25,7 +26,6 @@ FUNCTIONS:	to_physical_address, get_frame_info, tlb_invalidate
 #include <kern/cpu/sched.h>
 #include <kern/disk/pagefile_manager.h>
 #include "kheap.h"
-
 
 
 

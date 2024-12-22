@@ -5,6 +5,8 @@
  *      Author: HP
  */
 
+
+
 #include "trap.h"
 #include <kern/proc/user_environment.h>
 #include <kern/cpu/sched.h>
@@ -65,7 +67,40 @@ uint32 last_fault_va = 0;
 uint32 before_last_fault_va = 0;
 int8 num_repeated_fault  = 0;
 
+int is_page_read_write(struct Env *faulted_env, uint32 fault_va) {
+	int perms = pt_get_page_permissions(faulted_env->env_page_directory, fault_va);
+	if ((perms&PERM_WRITEABLE)) {
+	   return 1;
+	}
+	else return 0;
+}
+
+uint32 is_marked_page(struct Env* faulted_env, uint32 va) {
+    // check if the 10th bit is set to 1, if not return 0
+
+//	cprintf(">checking validation for page at %p\n", (void*)va);
+//	cprintf("->>>address in MB>>> %d mb\n", ((va)>>20));
+
+    uint32* ptr_page_table;
+    int status = get_page_table(faulted_env->env_page_directory, va, &ptr_page_table);
+    if(status == TABLE_NOT_EXIST) {
+		//ptr_page_table = (uint32*)create_page_table(faulted_env->env_page_directory, va);
+    	return 0;
+	}
+    /*
+	masking to get the 9th bit
+	va       -> 00000000 00000000 00101100 11011001
+	mask     -> 00000000 00000000 00000010 00000000
+	mask&va  -> 00000000 00000000 00000000 00000000
+	*/
+
+    uint32 mask = (1 << 10);
+    return ((ptr_page_table[PTX(va)]&mask)); // if 0 its not marked , if other it is set
+
+}
+
 struct Env* last_faulted_env = NULL;
+
 void fault_handler(struct Trapframe *tf)
 {
 	/******************************************************/
@@ -74,6 +109,7 @@ void fault_handler(struct Trapframe *tf)
 	//	cprintf("\n************Faulted VA = %x************\n", fault_va);
 	//	print_trapframe(tf);
 	/******************************************************/
+
 
 	//If same fault va for 3 times, then panic
 	//UPDATE: 3 FAULTS MUST come from the same environment (or the kernel)
@@ -84,13 +120,11 @@ void fault_handler(struct Trapframe *tf)
 		if (num_repeated_fault == 3)
 		{
 			print_trapframe(tf);
-			panic("Failed to handle fault! fault @ at va = %x from eip = %x causes va (%x) to be faulted for 3 successive times\n", before_last_fault_va, before_last_eip, fault_va);
+			panic("Failed to handle fault! fault @ va = %x from eip = %x causes va (%x) to be faulted for 3 successive times\n", before_last_fault_va, before_last_eip, fault_va);
 		}
 	}
 	else
 	{
-		before_last_fault_va = last_fault_va;
-		before_last_eip = last_eip;
 		num_repeated_fault = 0;
 	}
 	last_eip = (uint32)tf->tf_eip;
@@ -151,8 +185,23 @@ void fault_handler(struct Trapframe *tf)
 			//TODO: [PROJECT'24.MS2 - #08] [2] FAULT HANDLER I - Check for invalid pointers
 			//(e.g. pointing to unmarked user heap page, kernel or wrong access rights),
 			//your code is here
+			//cprintf("FAULT HANDLER I - Check for invalid pointers called \n");
+			if(fault_va >= KERNEL_BASE && fault_va <= KERNEL_HEAP_MAX) {
+				//cprintf("[FAULT HANDLER I - Check for invalid pointers]pointing to kernel address address\n");
+				env_exit();
 
-			/*============================================================================================*/
+			}
+			else if((is_page_read_write(faulted_env, fault_va))) {
+				//cprintf("[FAULT HANDLER I - Check for invalid pointers]it must be read only. \n");
+				env_exit();
+				//return;
+			}else if(fault_va < USER_HEAP_MAX && fault_va >= USER_HEAP_START && !is_marked_page(faulted_env, fault_va)) {
+				//cprintf("[FAULT HANDLER I - Check for invalid pointers]unmarked page\n");
+				env_exit();
+			}
+
+
+		/*============================================================================================*/
 		}
 
 		/*2022: Check if fault due to Access Rights */
@@ -180,8 +229,6 @@ void fault_handler(struct Trapframe *tf)
 		}
 		//		cprintf("\nPage working set AFTER fault handler...\n");
 		//		env_page_ws_print(curenv);
-
-
 	}
 
 	/*************************************************************/
@@ -214,37 +261,141 @@ void table_fault_handler(struct Env * curenv, uint32 fault_va)
 //=========================
 void page_fault_handler(struct Env * faulted_env, uint32 fault_va)
 {
-#if USE_KHEAP
-		struct WorkingSetElement *victimWSElement = NULL;
-		uint32 wsSize = LIST_SIZE(&(faulted_env->page_WS_list));
-#else
-		int iWS =faulted_env->page_last_WS_index;
-		uint32 wsSize = env_page_ws_get_size(faulted_env);
-#endif
+	#if USE_KHEAP
+			struct WorkingSetElement *victimWSElement = NULL;
+			uint32 wsSize = LIST_SIZE(&(faulted_env->page_WS_list));
+	#else
+			int iWS =faulted_env->page_last_WS_index;
+			uint32 wsSize = env_page_ws_get_size(faulted_env);
+	#endif
+			//cprintf("PLACEMENT=========================WS Size = %d\n", wsSize );
+//		cprintf("PLACEMENT=========================WS MX Size = %d\n", faulted_env->page_WS_max_size);
+		if(wsSize < (faulted_env->page_WS_max_size)) {
 
-	if(wsSize < (faulted_env->page_WS_max_size))
-	{
-		//cprintf("PLACEMENT=========================WS Size = %d\n", wsSize );
-		//TODO: [PROJECT'24.MS2 - #09] [2] FAULT HANDLER I - Placement
-		// Write your code here, remove the panic and write your code
-		panic("page_fault_handler().PLACEMENT is not implemented yet...!!");
+			//cprintf("working set before PLACEMENT:\n");
+			//env_page_ws_print(faulted_env);
+			//TODO: [PROJECT'24.MS2 - #09] [2] FAULT HANDLER I - Placement
+			// Write your code here, remove the panic and write your code
+			//panic("page_fault_handler().PLACEMENT is not implemented yet...!!");
 
-		//refer to the project presentation and documentation for details
-	}
-	else
-	{
+			uint32 *ptr_page_table = NULL;
+			int status =  get_page_table(faulted_env->env_page_directory, (uint32)fault_va, &ptr_page_table);
+			if (status == TABLE_NOT_EXIST) {
+				//cprintf("PLACEMENT -> page table doesn't exist\n");
+				ptr_page_table = create_page_table(faulted_env->env_page_directory, (uint32)fault_va);
+			}
+
+			// acctual allocation and mapping of the page
+			uint32 perms = (PERM_PRESENT | PERM_USER | PERM_WRITEABLE);
+			struct FrameInfo *framee = NULL;
+
+			int ss = allocate_frame(&framee);
+			ss = map_frame(faulted_env->env_page_directory, framee, fault_va, perms);
+			//faulted_env->is_marked[(fault_va - USER_HEAP_START)/PAGE_SIZE] = 1;
+
+			int ret = pf_read_env_page(faulted_env, (void *)fault_va);
+			if (ret == E_PAGE_NOT_EXIST_IN_PF) {
+
+				if (!(fault_va >= (USTACKBOTTOM) && fault_va < USTACKTOP)) {
+					if (!(fault_va >= (USER_HEAP_START) && fault_va < USER_HEAP_MAX)){
+						env_exit();
+					}
+
+				}
+			} else {
+				//cprintf("Placement> the page found on disk successcully! :)\n");
+			}
+
+
+			if(LIST_SIZE(&(faulted_env->page_WS_list)) < faulted_env->page_WS_max_size) {
+
+				struct WorkingSetElement *ws_element = env_page_ws_list_create_element(faulted_env, fault_va);
+				 LIST_INSERT_TAIL(&(faulted_env->page_WS_list), ws_element);
+				 if(LIST_SIZE(&(faulted_env->page_WS_list)) < faulted_env->page_WS_max_size) { // if still not full
+					 // list is not full
+					 faulted_env->page_last_WS_element = NULL;
+				 } else {
+					 // list is full
+					 faulted_env->page_last_WS_element = (LIST_FIRST(&(faulted_env->page_WS_list)));
+				 }
+
+				 //if(ws_element->virtual_address >= USER_HEAP_START)
+
+				 //cprintf("working set -> ws element added\n");
+			} else {
+				//cprintf("full working set -> can't add the ws element\n");
+			}
+
+
+
+//			cprintf("working set after PLACEMENT:\n");
+//			env_page_ws_print(faulted_env);
+
+	} else {
 		//cprintf("REPLACEMENT=========================WS Size = %d\n", wsSize );
 		//refer to the project presentation and documentation for details
 		//TODO: [PROJECT'24.MS3] [2] FAULT HANDLER II - Replacement
 		// Write your code here, remove the panic and write your code
-		panic("page_fault_handler() Replacement is not implemented yet...!!");
+		int found = 0;
+		uint32 *page_dir = faulted_env->env_page_directory;
+		struct WorkingSetElement *ws_iter = faulted_env->page_last_WS_element;
+//		# NORMAL Nth CHANCE;
+		int replStrat = page_WS_max_sweeps >= 0? 1:-1;
+		int max_sweeps = replStrat == -1? page_WS_max_sweeps * -1: page_WS_max_sweeps;
+		if (isPageReplacmentAlgorithmNchanceCLOCK()){
+			while (found != 1){
+				uint32 *page_table = NULL;
+				uint32 iter_va = ws_iter->virtual_address;
+
+				struct FrameInfo *frame_iter = get_frame_info(page_dir, iter_va, &page_table);
+				uint32 perms = pt_get_page_permissions(page_dir, iter_va);
+				uint32 isUsed = perms & PERM_USED;
+				uint32 isModif = perms & PERM_MODIFIED;
+
+				if (isUsed == PERM_USED){
+					pt_set_page_permissions(page_dir, iter_va, 0, PERM_USED);
+					ws_iter->sweeps_counter = 0;
+				}else{
+					ws_iter->sweeps_counter++;
+					if (ws_iter->sweeps_counter >= max_sweeps){
+						if (isModif == PERM_MODIFIED){
+							if (replStrat == -1 && ws_iter->sweeps_counter < (max_sweeps +1)){
+								ws_iter = LIST_NEXT(ws_iter) != NULL? LIST_NEXT(ws_iter) : LIST_FIRST(&faulted_env->page_WS_list);
+								continue;
+							}else{
+								pf_update_env_page(faulted_env, iter_va, frame_iter);
+							}
+						}
+						perms = perms | PERM_USED;
+						map_frame(page_dir, frame_iter, fault_va, perms);
+						unmap_frame(page_dir, iter_va);
+						int ret = pf_read_env_page(faulted_env, (void *)fault_va);
+						ws_iter->virtual_address = fault_va;
+						if (ret == E_PAGE_NOT_EXIST_IN_PF) {
+
+							if (!(fault_va >= (USTACKBOTTOM) && fault_va < USTACKTOP)) {
+								if (!(fault_va >= (USER_HEAP_START) && fault_va < USER_HEAP_MAX)){
+									env_exit();
+								}
+
+							}
+						}
+						faulted_env->page_last_WS_element = LIST_NEXT(ws_iter) != NULL? LIST_NEXT(ws_iter):LIST_FIRST(&faulted_env->page_WS_list);
+						found = 1;
+					}
+				}
+				ws_iter = LIST_NEXT(ws_iter) != NULL? LIST_NEXT(ws_iter) : LIST_FIRST(&faulted_env->page_WS_list);
+
+			}
+		}
 	}
+
 }
 
-void __page_fault_handler_with_buffering(struct Env * curenv, uint32 fault_va)
-{
+void __page_fault_handler_with_buffering(struct Env * curenv, uint32 fault_va) {
 	//[PROJECT] PAGE FAULT HANDLER WITH BUFFERING
 	// your code is here, remove the panic and write your code
 	panic("__page_fault_handler_with_buffering() is not implemented yet...!!");
+
 }
 

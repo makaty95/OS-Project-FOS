@@ -53,4 +53,7 @@ uint32 start_kernal_heap;
 uint32 segment_break;
 uint32 hard_limit;
 uint32 pgalloc_last;
+
+
+
 #endif // FOS_KERN_KHEAP_H_

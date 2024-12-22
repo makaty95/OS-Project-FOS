@@ -63,8 +63,10 @@ void _main(void)
 		curTotalSize = sizeof(int);
 		for (int i = 0; i < numOfAllocs; ++i)
 		{
+
 			for (int j = 0; j < allocCntPerSize; ++j)
 			{
+
 				actualSize = allocSizes[i] - sizeOfMetaData;
 				va = startVAs[idx] = malloc(actualSize);
 				midVAs[idx] = va + actualSize/2 ;
@@ -86,6 +88,7 @@ void _main(void)
 					curVA = ROUNDUP(curVA, PAGE_SIZE)- sizeof(int) /*next alloc will start at END Block (after sbrk)*/;
 					curTotalSize = roundedTotalSize - sizeof(int) /*exclude END Block*/;
 					expectedSize += diff - sizeof(int) /*exclude END Block*/;
+
 				}
 				else
 				{
@@ -103,6 +106,7 @@ void _main(void)
 						}
 					}
 				}
+				//cprintf("weiiird\n");
 				*(startVAs[idx]) = idx ;
 				*(midVAs[idx]) = idx ;
 				*(endVAs[idx]) = idx ;
