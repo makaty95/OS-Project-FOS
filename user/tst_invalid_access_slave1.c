@@ -6,6 +6,7 @@
 
 void _main(void)
 {
+	cprintf("Hello, testing -run tia 15-..\n");
 	//[1] Kernel address
 	uint32 *ptr = (uint32*)(KERN_STACK_TOP - 12) ;
 	*ptr = 100 ;

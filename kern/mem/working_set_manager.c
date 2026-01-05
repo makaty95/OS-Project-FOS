@@ -13,26 +13,25 @@
 ///============================================================================================
 /// Dealing with environment working set
 #if USE_KHEAP
-
-inline struct WorkingSetElement* env_page_ws_list_create_element(struct Env* e, uint32 virtual_address) {
-	//TODO: [PROJECT'24.MS2 - #07] [2] FAULT HANDLER I - Create a new WS element
-	//If failed to create a new one, kernel should panic()!
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-	//panic("env_page_ws_list_create_element is not implemented yet");
-	//Your Code is Here...
-	//cprintf("env_page_ws_list_create_element called \n");
-	struct WorkingSetElement *ws_element = (struct WorkingSetElement *) kmalloc((uint32)sizeof(struct WorkingSetElement));
-	if(ws_element == NULL) { // no memory
-		panic("no enough memory for creating ws element!!\n");
+//==============================
+// [1] CREATE A NEW WS ELEMENT
+//==============================
+//If failed to create a new one, kernel should panic()!
+inline struct WorkingSetElement* env_page_ws_list_create_element(struct Env* e, uint32 virtual_address)
+{
+	assert(virtual_address >= 0 && virtual_address < USER_TOP);
+	struct WorkingSetElement *wse = kmalloc(sizeof(struct WorkingSetElement)) ;
+	if (wse == NULL)
+	{
+		panic("can't create a new WS element");
 	}
-	ws_element->virtual_address = virtual_address;
-
-	return ws_element;
+	wse->virtual_address = ROUNDDOWN(virtual_address,PAGE_SIZE);
+	wse->sweeps_counter = 0;
+	wse->time_stamp = 0x00000000;
+	return wse;
 }
-
 inline void env_page_ws_invalidate(struct Env* e, uint32 virtual_address)
 {
-
 	if (isPageReplacmentAlgorithmLRU(PG_REP_LRU_LISTS_APPROX))
 	{
 		bool found = 0;
@@ -177,7 +176,7 @@ inline void env_page_ws_set_entry(struct Env* e, uint32 entry_index, uint32 virt
 	e->ptr_pageWorkingSet[entry_index].virtual_address = ROUNDDOWN(virtual_address,PAGE_SIZE);
 	e->ptr_pageWorkingSet[entry_index].empty = 0;
 
-	e->ptr_pageWorkingSet[entry_index].time_stamp = 0x80000000;
+	e->ptr_pageWorkingSet[entry_index].time_stamp = 0x00000000;
 	//e->ptr_pageWorkingSet[entry_index].time_stamp = time;
 	return;
 }
@@ -322,7 +321,7 @@ inline void env_table_ws_set_entry(struct Env* e, uint32 entry_index, uint32 vir
 	e->__ptr_tws[entry_index].empty = 0;
 
 	//e->__ptr_tws[entry_index].time_stamp = time;
-	e->__ptr_tws[entry_index].time_stamp = 0x80000000;
+	e->__ptr_tws[entry_index].time_stamp = 0x00000000;
 	return;
 }
 
@@ -356,6 +355,13 @@ inline uint32 env_table_ws_is_entry_empty(struct Env* e, uint32 entry_index)
 ///=================================================================================================
 ///=================================================================================================
 ///=================================================================================================
+
+// Change WS Sizes For PRIORITY  =========================================================
+
+void cut_paste_WS(struct WorkingSetElement* newWS, int newSize, struct Env* e)
+{
+	panic("not handled yet");
+}
 
 void double_WS_Size(struct Env* e, int isOneTimeOnly)
 {

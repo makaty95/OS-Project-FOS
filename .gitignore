@@ -1,3 +1,36 @@
-/bochs.log
-/obj
+/.bochsrc 
+/.bochsrc-debug 
+/.cproject 
+/.gdbinit 
+/.project 
+/BIOS-bochs-latest 
+/BIOS-bochs-latest_2-3 
+/bochs.log 
+/bochscon.bat 
+/coding 
+/FOS_Developer_Console.bat 
+/GNUmakefile 
+/mergedep.pl 
+/Readme_Project_Port_To_ModernGCC.txt 
+/stdout 
+/VGABIOS-lgpl-latest
+/kern/Makefrag
+/.settings
 
+
+
+
+
+###############################
+
+/bochs.log
+
+# Build Files
+obj/
+
+# Log Files
+*.log
+
+# VS Code Settings
+.vscode/settings.json
+.vscode/

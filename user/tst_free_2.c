@@ -21,6 +21,8 @@ short* endVAs[numOfAllocs*allocCntPerSize+1] ;
 
 void _main(void)
 {
+	panic("update is required!!");
+
 	/*********************** NOTE ****************************
 	 * WE COMPARE THE DIFF IN FREE FRAMES BY "AT LEAST" RULE
 	 * INSTEAD OF "EQUAL" RULE SINCE IT'S POSSIBLE THAT SOME
@@ -80,7 +82,7 @@ void _main(void)
 				//so update the curVA & curTotalSize to skip this area
 				roundedTotalSize = ROUNDUP(curTotalSize, PAGE_SIZE);
 				int diff = (roundedTotalSize - curTotalSize) ;
-				if (diff > 0 && diff < (DYN_ALLOC_MIN_BLOCK_SIZE + sizeOfMetaData))
+				if (diff > 0 && diff < (DYN_ALLOC_MIN_BLOCK_SIZE + sizeOfMetaData + sizeof(int) /*END block*/))
 				{
 //					cprintf("%~\n FRAGMENTATION: curVA = %x diff = %d\n", curVA, diff);
 //					cprintf("%~\n Allocated block @ %x with size = %d\n", va, get_block_size(va));
@@ -96,7 +98,7 @@ void _main(void)
 				//============================================================
 				if (is_correct)
 				{
-					if (check_block(va, expectedVA, expectedSize, 1) == 0)
+					if (check_dynalloc_datastruct(va, expectedVA, expectedSize, 1) == 0)
 					{
 						if (is_correct)
 						{
@@ -118,10 +120,10 @@ void _main(void)
 	if (remainSize >= (DYN_ALLOC_MIN_BLOCK_SIZE + sizeOfMetaData))
 	{
 		cprintf("Filling the remaining size of %d\n\n", remainSize);
-		va = startVAs[idx] = alloc_block(remainSize - sizeOfMetaData, DA_FF);
+		va = startVAs[idx] = alloc_block(remainSize - sizeOfMetaData);
 		//Check returned va
 		expectedVA = curVA + sizeOfMetaData/2;
-		if (check_block(va, expectedVA, remainSize, 1) == 0)
+		if (check_dynalloc_datastruct(va, expectedVA, remainSize, 1) == 0)
 		{
 			is_correct = 0;
 			panic("alloc_block_xx #PRQ.oo: WRONG ALLOC\n", idx);
@@ -138,7 +140,7 @@ void _main(void)
 		for (int i = 0; i < numOfAllocs; ++i)
 		{
 			free(startVAs[i*allocCntPerSize]);
-			if (check_block(startVAs[i*allocCntPerSize], startVAs[i*allocCntPerSize], allocSizes[i], 0) == 0)
+			if (check_dynalloc_datastruct(startVAs[i*allocCntPerSize], startVAs[i*allocCntPerSize], allocSizes[i], 0) == 0)
 			{
 				is_correct = 0;
 				cprintf("test_free_2 #1.1: WRONG FREE!\n");
@@ -148,7 +150,7 @@ void _main(void)
 		//Free block before last
 		free(startVAs[numOfAllocs*allocCntPerSize - 1]);
 
-		if (check_block(startVAs[numOfAllocs*allocCntPerSize - 1], startVAs[numOfAllocs*allocCntPerSize - 1], allocSizes[numOfAllocs-1], 0) == 0)
+		if (check_dynalloc_datastruct(startVAs[numOfAllocs*allocCntPerSize - 1], startVAs[numOfAllocs*allocCntPerSize - 1], allocSizes[numOfAllocs-1], 0) == 0)
 		{
 			is_correct = 0;
 			cprintf("test_free_2 #1.2: WRONG FREE!\n");
@@ -159,7 +161,7 @@ void _main(void)
 		va = malloc(actualSize);
 		//Check returned va
 		expectedVA = (void*)(USER_HEAP_START + sizeof(int) + sizeOfMetaData/2);
-		if (check_block(va, expectedVA, allocSizes[0], 1) == 0)
+		if (check_dynalloc_datastruct(va, expectedVA, allocSizes[0], 1) == 0)
 		{
 			is_correct = 0;
 			cprintf("test_free_2 #1.3: WRONG ALLOCATE AFTER FREE!\n");
@@ -167,7 +169,7 @@ void _main(void)
 
 		//Free 2nd block
 		free(startVAs[1]);
-		if (check_block(startVAs[1],startVAs[1], allocSizes[0], 0) == 0)
+		if (check_dynalloc_datastruct(startVAs[1],startVAs[1], allocSizes[0], 0) == 0)
 		{
 			is_correct = 0;
 			cprintf("test_free_2 #1.4: WRONG FREE!\n");
@@ -189,7 +191,7 @@ void _main(void)
 		blockIndex = numOfAllocs*allocCntPerSize;
 		free(startVAs[blockIndex]);
 		expectedSize = allocSizes[numOfAllocs-1] + remainSize;
-		if (check_block(startVAs[blockIndex-1],startVAs[blockIndex-1], expectedSize, 0) == 0)
+		if (check_dynalloc_datastruct(startVAs[blockIndex-1],startVAs[blockIndex-1], expectedSize, 0) == 0)
 		{
 			is_correct = 0;
 			cprintf("test_free_2 #2.1: WRONG FREE!\n");
@@ -201,7 +203,7 @@ void _main(void)
 		blockIndex = 2*allocCntPerSize+1 ;
 		free(startVAs[blockIndex]);
 		expectedSize = allocSizes[2]+allocSizes[2];
-		if (check_block(startVAs[blockIndex-1],startVAs[blockIndex-1], expectedSize, 0) == 0)
+		if (check_dynalloc_datastruct(startVAs[blockIndex-1],startVAs[blockIndex-1], expectedSize, 0) == 0)
 		{
 			is_correct = 0;
 			cprintf("test_free_2 #2.2: WRONG FREE!\n");
@@ -222,7 +224,7 @@ void _main(void)
 		blockIndex = 0 ;
 		free(startVAs[blockIndex]);
 		expectedSize = allocSizes[0]+allocSizes[0];
-		if (check_block(startVAs[blockIndex],startVAs[blockIndex], expectedSize, 0) == 0)
+		if (check_dynalloc_datastruct(startVAs[blockIndex],startVAs[blockIndex], expectedSize, 0) == 0)
 		{
 			is_correct = 0;
 			cprintf("test_free_2 #3.1: WRONG FREE!\n");
@@ -235,7 +237,7 @@ void _main(void)
 		free(startVAs[blockIndex]);
 		block_size = get_block_size(startVAs[blockIndex]) ;
 		expectedSize = allocSizes[0]+allocSizes[1];
-		if (check_block(startVAs[blockIndex],startVAs[blockIndex], expectedSize, 0) == 0)
+		if (check_dynalloc_datastruct(startVAs[blockIndex],startVAs[blockIndex], expectedSize, 0) == 0)
 		{
 			is_correct = 0;
 			cprintf("test_free_2 #3.2: WRONG FREE!\n");
@@ -258,7 +260,7 @@ void _main(void)
 		free(startVAs[blockIndex]);
 		block_size = get_block_size(startVAs[blockIndex-1]) ;
 		expectedSize = allocSizes[3]+allocSizes[3]+allocSizes[4];
-		if (check_block(startVAs[blockIndex-1],startVAs[blockIndex-1], expectedSize, 0) == 0)
+		if (check_dynalloc_datastruct(startVAs[blockIndex-1],startVAs[blockIndex-1], expectedSize, 0) == 0)
 		{
 			is_correct = 0;
 			cprintf("test_free_2 #4: WRONG FREE!\n");
@@ -282,7 +284,7 @@ void _main(void)
 			va = malloc(actualSize);
 			//Check returned va
 			expectedVA = (void*)(USER_HEAP_START + sizeOfMetaData);
-			if (check_block(va, expectedVA, expectedSize, 1) == 0)
+			if (check_dynalloc_datastruct(va, expectedVA, expectedSize, 1) == 0)
 			{
 				is_correct = 0;
 				cprintf("test_free_2 #5.1.1: WRONG ALLOCATE AFTER FREE!\n");
@@ -295,7 +297,7 @@ void _main(void)
 			expectedSize = ROUNDUP(actualSize + sizeOfMetaData, 2);
 			//Check returned va
 			expectedVA = (void*)(USER_HEAP_START + sizeOfMetaData + 4*sizeof(int) + sizeOfMetaData);
-			if (check_block(va, expectedVA, expectedSize, 1) == 0)
+			if (check_dynalloc_datastruct(va, expectedVA, expectedSize, 1) == 0)
 			{
 				is_correct = 0;
 				cprintf("test_free_2 #5.1.2: WRONG ALLOCATE AFTER FREE!\n");
@@ -308,7 +310,7 @@ void _main(void)
 			va = malloc(actualSize);
 			//Check returned va
 			expectedVA = startVAs[1*allocCntPerSize - 1];
-			if (check_block(va, expectedVA, expectedSize, 1) == 0)
+			if (check_dynalloc_datastruct(va, expectedVA, expectedSize, 1) == 0)
 			{
 				is_correct = 0;
 				cprintf("test_free_2 #5.1.3: WRONG ALLOCATE AFTER FREE!\n");
@@ -326,7 +328,7 @@ void _main(void)
 		va = malloc(actualSize);
 		//Check returned va
 		expectedVA = startVAs[4*allocCntPerSize - 2];
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
+		if (check_dynalloc_datastruct(va, expectedVA, expectedSize, 1) == 0)
 		{
 			is_correct = 0;
 			cprintf("test_free_2 #5.2: WRONG ALLOCATE AFTER FREE!\n");
@@ -345,7 +347,7 @@ void _main(void)
 			va = malloc(actualSize);
 			//Check returned va
 			expectedVA = startVAs[2*allocCntPerSize];
-			if (check_block(va, expectedVA, expectedSize, 1) == 0)
+			if (check_dynalloc_datastruct(va, expectedVA, expectedSize, 1) == 0)
 			{
 				is_correct = 0;
 				cprintf("test_free_2 #5.3.1: WRONG ALLOCATE AFTER FREE!\n");
@@ -368,13 +370,11 @@ void _main(void)
 			actualSize = 3*kilo/2 ;
 			expectedSize = ROUNDUP(actualSize + sizeOfMetaData, 2);
 
-			print_blocks_list(freeBlocksList);
-
 			va = malloc(actualSize);
 
 			//Check returned va
 			expectedVA = startVAs[numOfAllocs*allocCntPerSize-1];
-			if (check_block(va, expectedVA, expectedSize, 1) == 0)
+			if (check_dynalloc_datastruct(va, expectedVA, expectedSize, 1) == 0)
 			{
 				is_correct = 0;
 				cprintf("test_free_2 #5.3.2: WRONG ALLOCATE AFTER FREE!\n");
@@ -390,7 +390,7 @@ void _main(void)
 
 			//Check returned va
 			expectedVA = (void*)startVAs[numOfAllocs*allocCntPerSize-1] + 3*kilo/2 + sizeOfMetaData;
-			if (check_block(va, expectedVA, expectedSize, 1) == 0)
+			if (check_dynalloc_datastruct(va, expectedVA, expectedSize, 1) == 0)
 			{
 				is_correct = 0;
 				cprintf("test_free_2 #5.3.3: WRONG ALLOCATE AFTER FREE!\n");

@@ -5,6 +5,7 @@
 #include <inc/x86.h>
 #include <inc/assert.h>
 #include <inc/queue.h>
+#include <inc/dynamic_allocator.h>
 
 #include <kern/proc/user_environment.h>
 #include "../trap/syscall.h"
@@ -20,20 +21,20 @@
 
 void rsttst()
 {
-	init_spinlock(&tstcntlock, "tstcnt lock");
-	acquire_spinlock(&tstcntlock);
+	init_kspinlock(&tstcntlock, "tstcnt lock");
+	acquire_kspinlock(&tstcntlock);
 	{
 		tstcnt = 0;
 	}
-	release_spinlock(&tstcntlock);
+	release_kspinlock(&tstcntlock);
 }
 void inctst()
 {
-	acquire_spinlock(&tstcntlock);
+	acquire_kspinlock(&tstcntlock);
 	{
 		tstcnt++;
 	}
-	release_spinlock(&tstcntlock);
+	release_kspinlock(&tstcntlock);
 }
 uint32 gettst()
 {
@@ -71,11 +72,11 @@ void tst(uint32 n, uint32 v1, uint32 v2, char c, int inv)
 
 	if (chk == 0) panic("Error!! test fails");
 
-	acquire_spinlock(&tstcntlock);
+	acquire_kspinlock(&tstcntlock);
 	{
 		tstcnt++ ;
 	}
-	release_spinlock(&tstcntlock);
+	release_kspinlock(&tstcntlock);
 
 	return;
 }
@@ -83,11 +84,11 @@ void tst(uint32 n, uint32 v1, uint32 v2, char c, int inv)
 void chktst(uint32 n)
 {
 	int __tstcnt;
-	acquire_spinlock(&tstcntlock);
+	acquire_kspinlock(&tstcntlock);
 	{
 		__tstcnt = tstcnt;
 	}
-	release_spinlock(&tstcntlock);
+	release_kspinlock(&tstcntlock);
 	if (__tstcnt == n)
 		cprintf("\nCongratulations... test runs successfully\n");
 	else
@@ -146,12 +147,15 @@ void fixedPt2Str(fixed_point_t f, int num_dec_digits, char* output)
 
 int __firstTimeSleep = 1;
 struct Channel __tstchan__ ;
-struct spinlock __tstchan_lk__;
+struct kspinlock __tstchan_lk__;
 int __firstTimeSleepLock = 1;
 struct sleeplock __tstslplk__;
-
+int __numOfSlaves = 0;
+#define __maxNumOfKSems (10)
+struct ksemaphore __ksems[__maxNumOfKSems];
 void sys_utilities(char* utilityName, int value)
 {
+#if USE_KHEAP
 	if (strncmp(utilityName, "__BSDSetNice@", strlen("__BSDSetNice@")) == 0)
 	{
 		int number_of_tokens;
@@ -163,6 +167,18 @@ void sys_utilities(char* utilityName, int value)
 		envid2env(envID, &env, 0);
 		assert(env->env_id == envID) ;
 		env_set_nice(env, value);
+	}
+	else if (strncmp(utilityName, "__PRIRRSetPriority@", strlen("__PRIRRSetPriority@")) == 0)
+	{
+		int number_of_tokens;
+		//allocate array of char * of size MAX_ARGUMENTS = 16 found in string.h
+		char *tokens[MAX_ARGUMENTS];
+		strsplit(utilityName, "@", tokens, &number_of_tokens) ;
+		int envID = strtol(tokens[1], NULL, 10);
+		struct Env* env = NULL ;
+		envid2env(envID, &env, 0);
+		assert(env->env_id == envID) ;
+		env_set_priority(envID, value);
 	}
 	else if (strncmp(utilityName, "__CheckExitOrder@", strlen("__CheckExitOrder@")) == 0)
 	{
@@ -184,7 +200,7 @@ void sys_utilities(char* utilityName, int value)
 		}
 		bool success = 1;
 
-		acquire_spinlock(&ProcessQueues.qlock);
+		acquire_kspinlock(&ProcessQueues.qlock);
 		{
 			//REVERSE LOOP ON EXIT LIST (to be the same as the queue order)
 			int numOfExitEnvs = LIST_SIZE(&ProcessQueues.env_exit_queue);
@@ -215,21 +231,48 @@ void sys_utilities(char* utilityName, int value)
 				prevEnvID = env->env_id;
 			}
 		}
-		release_spinlock(&ProcessQueues.qlock);
+		release_kspinlock(&ProcessQueues.qlock);
 		if (*numOfInstances != 0 || success == 0)
 		{
-			cprintf("###########################################\n");
-			cprintf("%s: check exit order is FAILED\n", progName);
-			cprintf("###########################################\n");
+			cons_lock();
+			{
+				cprintf("###########################################\n");
+				cprintf("%s: check exit order is FAILED\n", progName);
+				cprintf("###########################################\n");
+			}
+			cons_unlock();
 			*numOfInstances = 0; //to indicate the failure of test
 		}
 		else
 		{
-			cprintf("####################################################\n");
-			cprintf("%s: check exit order is SUCCEEDED\n", progName);
-			cprintf("####################################################\n");
+			cons_lock();
+			{
+				cprintf("####################################################\n");
+				cprintf("%s: check exit order is SUCCEEDED\n", progName);
+				cprintf("####################################################\n");
+			}
+			cons_unlock();
 			*numOfInstances = 1; //to indicate the success of test
 		}
+	}
+	else if (strncmp(utilityName, "__NthClkRepl@", strlen("__NthClkRepl@")) == 0)
+	{
+		int number_of_tokens;
+		//allocate array of char * of size MAX_ARGUMENTS = 16 found in string.h
+		char *tokens[MAX_ARGUMENTS];
+		strsplit(utilityName, "@", tokens, &number_of_tokens) ;
+		int type = strtol(tokens[1], NULL, 10);
+		int N = value;
+		if (type == 2)
+			N *= -1;
+		setPageReplacmentAlgorithmNchanceCLOCK(N);
+		cons_lock();
+		{
+			cprintf("\n*********************************************************"
+					"\nPAGE REPLACEMENT IS SET TO Nth Clock type = %d (N = %d)."
+					"\n*********************************************************\n", type, N);
+		}
+		cons_unlock();
 	}
 	else if (strcmp(utilityName, "__Sleep__") == 0)
 	{
@@ -237,11 +280,13 @@ void sys_utilities(char* utilityName, int value)
 		{
 			__firstTimeSleep = 0;
 			init_channel(&__tstchan__, "Test Channel");
-			init_spinlock(&__tstchan_lk__, "Test Channel Lock");
+			init_kspinlock(&__tstchan_lk__, "Test Channel Lock");
 		}
-		acquire_spinlock(&__tstchan_lk__);
-		sleep(&__tstchan__, &__tstchan_lk__);
-		release_spinlock(&__tstchan_lk__);
+		acquire_kspinlock(&__tstchan_lk__);
+		{
+			sleep(&__tstchan__, &__tstchan_lk__);
+		}
+		release_kspinlock(&__tstchan_lk__);
 	}
 	else if (strcmp(utilityName, "__WakeupOne__") == 0)
 	{
@@ -253,13 +298,21 @@ void sys_utilities(char* utilityName, int value)
 	}
 	else if (strcmp(utilityName, "__GetChanQueueSize__") == 0)
 	{
-		int* numOfProcesses = (int*) value ;
-		*numOfProcesses = LIST_SIZE(&__tstchan__.queue);
+		acquire_kspinlock(&ProcessQueues.qlock);
+		{
+			int* numOfProcesses = (int*) value ;
+			*numOfProcesses = LIST_SIZE(&__tstchan__.queue);
+		}
+		release_kspinlock(&ProcessQueues.qlock);
 	}
 	else if (strcmp(utilityName, "__GetReadyQueueSize__") == 0)
 	{
-		int* numOfProcesses = (int*) value ;
-		*numOfProcesses = LIST_SIZE(&ProcessQueues.env_ready_queues[0]);
+		acquire_kspinlock(&ProcessQueues.qlock);
+		{
+			int* numOfProcesses = (int*) value ;
+			*numOfProcesses = LIST_SIZE(&ProcessQueues.env_ready_queues[0]);
+		}
+		release_kspinlock(&ProcessQueues.qlock);
 	}
 	else if (strcmp(utilityName, "__AcquireSleepLock__") == 0)
 	{
@@ -276,8 +329,13 @@ void sys_utilities(char* utilityName, int value)
 	}
 	else if (strcmp(utilityName, "__GetLockQueueSize__") == 0)
 	{
-		int* numOfProcesses = (int*) value ;
-		*numOfProcesses = LIST_SIZE(&__tstslplk__.chan.queue);
+		acquire_kspinlock(&ProcessQueues.qlock);
+		{
+			int* numOfProcesses = (int*) value ;
+			*numOfProcesses = LIST_SIZE(&__tstslplk__.chan.queue);
+			//cprintf("__GetLockQueueSize__ = %d\n", *numOfProcesses);
+		}
+		release_kspinlock(&ProcessQueues.qlock);
 	}
 	else if (strcmp(utilityName, "__GetLockValue__") == 0)
 	{
@@ -289,6 +347,193 @@ void sys_utilities(char* utilityName, int value)
 		uint32* lockOwnerID = (uint32*) value ;
 		*lockOwnerID =__tstslplk__.pid;
 	}
+	else if (strcmp(utilityName, "__GetConsLockedCnt__") == 0)
+	{
+		acquire_kspinlock(&ProcessQueues.qlock);
+		{
+			uint32* consLockCnt = (uint32*) value ;
+			*consLockCnt = queue_size(&(conslock.chan.queue));
+		}
+		release_kspinlock(&ProcessQueues.qlock);
+	}
+	else if (strcmp(utilityName, "__tmpReleaseConsLock__") == 0)
+	{
+		if (CONS_LCK_METHOD == LCK_SLEEP)
+		{
+			conslock.pid = get_cpu_proc()->env_id;
+			cons_unlock();
+		}
+	}
+	/*else if (strcmp(utilityName, "__getKernelSBreak__") == 0)
+	{
+		uint32* ksbrk = (uint32*) value ;
+	 *ksbrk = (uint32)sbrk(0);
+	}*/
+	else if (strcmp(utilityName, "__changeInterruptStatus__") == 0)
+	{
+		if (value == 0)
+		{
+			kclock_stop();
+			cli();
+			struct Env * p = get_cpu_proc();
+			if (p == NULL)
+			{
+				panic("cons_lock: no running process to block");
+			}
+			p->env_tf->tf_eflags &= ~FL_IF ;
+			//cprintf("\nINTERRUPT WILL BE DISABLED\n");
+		}
+		else if (value == 1)
+		{
+			kclock_stop();
+			cli();
+			struct Env * p = get_cpu_proc();
+			if (p == NULL)
+			{
+				panic("cons_unlock: no running process to block");
+			}
+			p->env_tf->tf_eflags |= FL_IF ;
+			//cprintf("\nINTERRUPT WILL BE ENABLED\n");
+		}
+	}
+	else if (strncmp(utilityName, "__getProcState@", strlen("__getProcState@")) == 0)
+	{
+		int number_of_tokens;
+		//allocate array of char * of size MAX_ARGUMENTS = 16 found in string.h
+		char *tokens[MAX_ARGUMENTS];
+		strsplit(utilityName, "@", tokens, &number_of_tokens) ;
+		int envID = strtol(tokens[1], NULL, 10);
+		struct Env* env = NULL ;
+		int ret = envid2env(envID, &env, 0);
+		uint32* procState = (uint32*) value ;
+		if (ret == E_BAD_ENV)
+		{
+			//cprintf("\n\n<<<<<<<<<<< BAD ENV >>>>>>>>>>>\n\n");
+			*procState = E_BAD_ENV;
+			return;
+		}
+		else
+		{
+			assert(env->env_id == envID) ;
+			*procState = env->env_status;
+		}
+	}
+	else if (strcmp(utilityName, "__IsOPTRepl__") == 0)
+	{
+		uint32* isOPTRepl = (uint32*) value ;
+		*isOPTRepl = isPageReplacmentAlgorithmOPTIMAL();
+	}
+	else if (strcmp(utilityName, "__CheckUserKernStack__") == 0)
+	{
+		uint32* correct = (uint32*) value ;
+		*correct = 1;
+		struct Env *e = get_cpu_proc();
+		uint32 kstackBottom = (uint32)e->kstack;
+		uint32 kstackTop = kstackBottom + KERNEL_STACK_SIZE;
+
+		for (uint32 va = kstackBottom; va < kstackTop ; va+=PAGE_SIZE)
+		{
+			uint32 *ptrTable;
+			struct FrameInfo *ptrFI = get_frame_info(e->env_page_directory, va, &ptrTable);
+			//Check Guard Page
+			if (va == kstackBottom && (ptrTable[PTX(va)] & PERM_PRESENT) != 0)
+			{
+				cprintf_colored(TEXT_TESTERR_CLR, "User Kern Stack ERROR#1: guard page is not set correctly\n");
+				*correct = 0;
+				break;
+			}
+			else if (ptrFI == NULL)
+			{
+				cprintf_colored(TEXT_TESTERR_CLR, "User Kern Stack ERROR#2: page is not set correctly\n");
+				*correct = 0;
+				break;
+			}
+		}
+	}
+	else if (strncmp(utilityName, "__CheckRefStream@", strlen("__CheckRefStream@")) == 0)
+	{
+#define MAX_REF_CNT 128
+		bool* correct = (bool*) value ;
+		*correct = 1;
+		int number_of_tokens;
+		char *tokens[MAX_REF_CNT];
+		strsplit(utilityName, "@", tokens, &number_of_tokens) ;
+		int numOfRefs = strtol(tokens[1], NULL, 10);
+		assert(numOfRefs < MAX_REF_CNT);
+		struct Env* env = get_cpu_proc() ;
+		if (numOfRefs != LIST_SIZE(&(env->referenceStreamList)))
+		{
+			cprintf("num of references MISMATCHED! Expected = %d, Actual = %d\n", numOfRefs, LIST_SIZE(&(env->referenceStreamList)));
+			*correct = 0;
+			return;
+		}
+
+		uint32 *expectedRefStream = (uint32 *)strtol(tokens[2], NULL, 10);
+
+		//Check the expected reference stream against the calculated one
+		struct PageRefElement *curRef = LIST_FIRST(&(env->referenceStreamList));
+		for (int i = 0; i < numOfRefs; ++i)
+		{
+			if (ROUNDDOWN(expectedRefStream[i], PAGE_SIZE) != ROUNDDOWN(curRef->virtual_address, PAGE_SIZE))
+			{
+				cprintf("Ref#%d MISMATCHED! Expected = %d, Actual = %d\n", ROUNDDOWN(expectedRefStream[i], PAGE_SIZE), ROUNDDOWN(curRef->virtual_address, PAGE_SIZE));
+				*correct = 0;
+				return;
+			}
+			curRef = LIST_NEXT(curRef);
+		}
+	}
+	else if (strcmp(utilityName, "__InvPage__") == 0)
+	{
+		uint32 va = (uint32) value ;
+		struct Env* env = get_cpu_proc() ;
+		env_page_ws_invalidate(env, va);
+	}
+	else if (strncmp(utilityName, "__NumOfSlaves@", strlen("__NumOfSlaves@")) == 0)
+	{
+		uint32* numOfSlaves = (uint32*) value ;
+
+		int number_of_tokens;
+		char *tokens[MAX_REF_CNT];
+		strsplit(utilityName, "@", tokens, &number_of_tokens) ;
+		if (strcmp(tokens[1], "Set") == 0)
+		{
+			__numOfSlaves = *numOfSlaves;
+		}
+		else if (strcmp(tokens[1], "Get") == 0)
+		{
+			*numOfSlaves = __numOfSlaves ;
+		}
+	}
+	else if (strncmp(utilityName, "__KSem@", strlen("__KSem@")) == 0)
+	{
+
+		int number_of_tokens;
+		char *tokens[MAX_REF_CNT];
+		strsplit(utilityName, "@", tokens, &number_of_tokens) ;
+		int semNum = strtol(tokens[1], NULL, 10);
+		//cprintf("%s - semNum = %d, action = %s\n", utilityName, semNum, tokens[2]);
+		if (strcmp(tokens[2], "Init") == 0)
+		{
+			char semName[10] ;
+			ltostr(semNum, semName);
+			init_ksemaphore(&(__ksems[semNum]), *((int*)value), semName);
+		}
+		else if (strcmp(tokens[2], "Wait") == 0)
+		{
+			wait_ksemaphore(&(__ksems[semNum]));
+		}
+		else if (strcmp(tokens[2], "Signal") == 0)
+		{
+			signal_ksemaphore(&(__ksems[semNum]));
+		}
+		if (strcmp(tokens[2], "Get") == 0)
+		{
+			int *val = ((int*)value);
+			*val = __ksems[semNum].count;
+		}
+	}
+
 	if ((int)value < 0)
 	{
 		if (strcmp(utilityName, "__ReplStrat__") == 0)
@@ -299,9 +544,29 @@ void sys_utilities(char* utilityName, int value)
 				cprintf("\n*************************************\nPAGE REPLACEMENT IS SET TO FIFO.\n*************************************\n");
 				setPageReplacmentAlgorithmFIFO();
 				break;
+			case -PG_REP_CLOCK:
+				cprintf("\n*************************************\nPAGE REPLACEMENT IS SET TO CLOCK.\n*************************************\n");
+				setPageReplacmentAlgorithmCLOCK();
+				break;
+			case -PG_REP_MODIFIEDCLOCK:
+				cprintf("\n*************************************\nPAGE REPLACEMENT IS SET TO MODIFIED CLOCK.\n*************************************\n");
+				setPageReplacmentAlgorithmModifiedCLOCK();
+				break;
+			case -PG_REP_OPTIMAL:
+				cprintf("\n*************************************\nPAGE REPLACEMENT IS SET TO OPTIMAL.\n*************************************\n");
+				setPageReplacmentAlgorithmOPTIMAL();
+				break;
+			case -PG_REP_LRU_TIME_APPROX:
+				cprintf("\n*************************************\nPAGE REPLACEMENT IS SET TO LRU AGING.\n*************************************\n");
+				setPageReplacmentAlgorithmLRU(PG_REP_LRU_TIME_APPROX);
+				break;
 			case -PG_REP_LRU_LISTS_APPROX:
 				cprintf("\n*************************************\nPAGE REPLACEMENT IS SET TO LRU LISTS.\n*************************************\n");
 				setPageReplacmentAlgorithmLRU(PG_REP_LRU_LISTS_APPROX);
+				break;
+			case -PG_REP_NchanceCLOCK:
+				cprintf("\n*************************************\nPAGE REPLACEMENT IS SET TO Nth Clock Normal (N=1).\n*************************************\n");
+				setPageReplacmentAlgorithmNchanceCLOCK(1);
 				break;
 			default:
 				break;
@@ -309,7 +574,7 @@ void sys_utilities(char* utilityName, int value)
 		}
 	}
 	/*****************************************************************************************/
-
+#endif
 }
 /*=======================================*/
 void detect_loop_in_FrameInfo_list(struct FrameInfo_List* fi_list)
@@ -349,7 +614,7 @@ void scarce_memory()
 		total_size_tobe_allocated++;
 
 	int fflSize = 0;
-	acquire_spinlock(&MemFrameLists.mfllock);
+	acquire_kspinlock(&MemFrameLists.mfllock);
 	{
 		fflSize = LIST_SIZE(&MemFrameLists.free_frame_list);
 
@@ -364,7 +629,7 @@ void scarce_memory()
 			allocate_frame(&ptr_tmp_FI) ;
 		}
 	}
-	release_spinlock(&MemFrameLists.mfllock);
+	release_kspinlock(&MemFrameLists.mfllock);
 
 }
 
@@ -377,7 +642,7 @@ uint32 calc_no_pages_tobe_removed_from_ready_exit_queues(uint32 WS_or_MEMORY_fla
 	assert(cur_env != NULL);
 	if(WS_or_MEMORY_flag == 1)	// THEN MEMORY SHALL BE FREED
 	{
-		acquire_spinlock(&ProcessQueues.qlock);
+		acquire_kspinlock(&ProcessQueues.qlock);
 		{
 			for(int i = 0; i < num_of_ready_queues; i++)
 			{
@@ -407,7 +672,7 @@ uint32 calc_no_pages_tobe_removed_from_ready_exit_queues(uint32 WS_or_MEMORY_fla
 				no_of_pages_tobe_removed_from_exit += num_of_pages_in_WS;
 			}
 		}
-		release_spinlock(&ProcessQueues.qlock);
+		release_kspinlock(&ProcessQueues.qlock);
 		if(cur_env != NULL)
 		{
 #if USE_KHEAP
@@ -443,7 +708,7 @@ void schenv()
 
 	__nl = 0;
 	__ne = NULL;
-	acquire_spinlock(&ProcessQueues.qlock);
+	acquire_kspinlock(&ProcessQueues.qlock);
 	{
 		for (int i = 0; i < num_of_ready_queues; ++i)
 		{
@@ -455,7 +720,7 @@ void schenv()
 			}
 		}
 	}
-	release_spinlock(&ProcessQueues.qlock);
+	release_kspinlock(&ProcessQueues.qlock);
 	struct Env* cur_env = get_cpu_proc();
 	if (cur_env != NULL)
 	{
@@ -489,11 +754,11 @@ void chksch(uint8 onoff)
 	if (isSchedMethodBSD())
 	{
 		__histla = __pla = get_load_average();
-		acquire_spinlock(&ProcessQueues.qlock);
+		acquire_kspinlock(&ProcessQueues.qlock);
 		{
 			__pnexit = LIST_SIZE(&ProcessQueues.env_exit_queue) ;
 		}
-		release_spinlock(&ProcessQueues.qlock);
+		release_kspinlock(&ProcessQueues.qlock);
 		__firsttime = 1;
 	}
 	__chkstatus = onoff;
@@ -523,15 +788,15 @@ void chk2(struct Env* __se)
 	if (isSchedMethodBSD())
 	{
 		__nla = get_load_average();
-		acquire_spinlock(&ProcessQueues.qlock);
+		acquire_kspinlock(&ProcessQueues.qlock);
 		{
 			__nnexit = LIST_SIZE(&ProcessQueues.env_exit_queue);
 		}
-		release_spinlock(&ProcessQueues.qlock);
+		release_kspinlock(&ProcessQueues.qlock);
 
 		if (__firsttime)
 		{
-			acquire_spinlock(&ProcessQueues.qlock);
+			acquire_kspinlock(&ProcessQueues.qlock);
 			{
 				//Cnt #Processes
 				__nproc = __se != NULL? 1 : 0;
@@ -541,13 +806,13 @@ void chk2(struct Env* __se)
 				}
 				__firsttime = 0;
 			}
-			release_spinlock(&ProcessQueues.qlock);
+			release_kspinlock(&ProcessQueues.qlock);
 		}
 		else
 		{
 			if (__pnexit != __nnexit)
 			{
-				acquire_spinlock(&ProcessQueues.qlock);
+				acquire_kspinlock(&ProcessQueues.qlock);
 				{
 					//Cnt #Processes
 					__nproc = __se != NULL? 1 : 0;
@@ -556,7 +821,7 @@ void chk2(struct Env* __se)
 						__nproc += LIST_SIZE(&(ProcessQueues.env_ready_queues[l]));
 					}
 				}
-				release_spinlock(&ProcessQueues.qlock);
+				release_kspinlock(&ProcessQueues.qlock);
 			}
 
 			//Make sure that the la is changed over long period of time
@@ -840,3 +1105,15 @@ void page_check()
  */
 
 //
+
+uint32* clone_kern_dir() {
+	struct FrameInfo* ptr_fi;
+	allocate_frame(&ptr_fi);
+	uint32 dir_pa = to_physical_address(ptr_fi);
+	uint32* dir_ptr = STATIC_KERNEL_VIRTUAL_ADDRESS(dir_pa);
+	for (int i = 0; i < 1024; ++i) {
+		dir_ptr[i] = ptr_page_directory[i];
+	}
+	lcr3(dir_pa);
+	return dir_ptr;
+}

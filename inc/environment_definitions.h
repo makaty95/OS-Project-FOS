@@ -42,7 +42,6 @@ unsigned int _ModifiedBufferLength;
 //2018 Percentage of the pages to be removed from the WS [either for scarce RAM or Full WS]
 #define DEFAULT_PERCENT_OF_PAGE_WS_TO_REMOVE	10	// 10% of the loaded pages is required to be removed
 
-//TODO: [PROJECT'24.MS1 - #00 GIVENS] [4] LOCKS - ENV STAUS Constants
 // Values of env_status in struct Env
 #define ENV_FREE		0
 #define ENV_READY		1
@@ -50,11 +49,8 @@ unsigned int _ModifiedBufferLength;
 #define ENV_BLOCKED		3
 #define ENV_NEW			4
 #define ENV_EXIT		5
-#define ENV_UNKNOWN		6
-
-#define FREE_PAGE			0
-#define PAGE_MARKED 		1
-#define PAGE_MARK_START 	2
+#define ENV_KILLED		6
+#define ENV_UNKNOWN		7
 
 LIST_HEAD(Env_Queue, Env);		// Declares 'struct Env_Queue'
 LIST_HEAD(Env_list, Env);		// Declares 'struct Env_list'
@@ -73,9 +69,16 @@ struct WorkingSetElement {
 	LIST_ENTRY(WorkingSetElement) prev_next_info;	// list link pointers
 };
 
-
 //2020
 LIST_HEAD(WS_List, WorkingSetElement);		// Declares 'struct WS_list'
+
+/*2025*/
+struct PageRefElement {
+	unsigned int virtual_address;
+	LIST_ENTRY(PageRefElement) prev_next_info;	// list link pointers
+};
+LIST_HEAD(PageRef_List, PageRefElement);		// Declares 'struct PageRef_List'
+
 //======================================================================
 
 //2024 (ref: xv6 OS - x86 version)
@@ -100,9 +103,6 @@ struct Context {
   uint32 eip;
 };
 
-
-
-
 struct Env {
 	//================
 	/*MAIN INFO...*/
@@ -117,6 +117,9 @@ struct Env {
 	char prog_name[PROGNAMELEN];	// Program name (to print it via USER.cprintf in multitasking)
 	void* channel;					// Address of the channel that it's blocked (sleep) on it
 
+
+
+
 	//================
 	/*ADDRESS SPACE*/
 	//================
@@ -127,48 +130,38 @@ struct Env {
 									//(to be dynamically allocated during the process creation)
 									//Its first page is ALWAYS used as a GUARD PAGE (i.e. unmapped)
 
-	//=======================================================================
-	//TODO: [PROJECT'24.MS2 - #10] [3] USER HEAP - add suitable code here
-	//=======================================================================
-	uint32 start;
-	uint32 sbreak;
-	uint32 hlimit;
-	uint32 end_bound;
-	uint32 pgalloc_last;
-
-
-	void* returned_address;
-	void* shr_returned_address;
-	void* get_shr_returned_address;
 
 	//for page file management
 	uint32* disk_env_pgdir;
 	//2016
 	unsigned int disk_env_pgdir_PA;
 
-	// 00000000 00000000 000000 00 00000000
-	// 00000000 00000000 000000 00 00000001
-
-	// for table file management
+	//for table file management
 	uint32* disk_env_tabledir;
 	//2016
 	unsigned int disk_env_tabledir_PA;
-
 
 	//================
 	/*WORKING SET*/
 	//================
 	//page working set management
 	unsigned int page_WS_max_size;					//Max allowed size of WS
+	uint32 list_copied;
+
 #if USE_KHEAP
-	struct WS_List page_WS_list;					//List of WS elements
+
+	struct WS_List page_WS_list ;					//List of WS elements
 	struct WorkingSetElement* page_last_WS_element;	//ptr to last inserted WS element
+	struct PageRef_List referenceStreamList;		//List of page references stream to be used for OPTIMAL replacement strategy
+
+	uint32 *prepagedVAs;							//Initial virtual addresses after fetching the process into RAM
+	uint32 numOfPrepagedVAs;						//Number of prepaged VAs
 #else
 	struct WorkingSetElement ptr_pageWorkingSet[__PWS_MAX_SIZE];
 	//uint32 page_last_WS_index;
 	struct WS_List PageWorkingSetList ;	//LRU Approx: List of available WS elements
-#endif
 	uint32 page_last_WS_index;
+#endif
 
 	//table working set management
 	struct WorkingSetElement __ptr_tws[__TWS_MAX_SIZE];
@@ -184,10 +177,14 @@ struct Env {
 	struct WorkingSetElement* __uptr_pws;
 
 	//Percentage of WS pages to be removed [either for scarce RAM or Full WS]
-	unsigned int percentage_of_WS_pages_to_be_removed;
+		unsigned int percentage_of_WS_pages_to_be_removed;
 
 	//==================
 	/*CPU BSD Sched...*/
+	//==================
+
+	//==================
+	/*CPU PRIORITY RR Sched...*/
 	//==================
 
 	//================
@@ -203,9 +200,6 @@ struct Env {
 	//2020
 	uint32 nPageIn, nPageOut, nNewPageAdded;
 	uint32 nClocks ;
-
-	uint32 sharedObjectsCounter;
-
 
 };
 

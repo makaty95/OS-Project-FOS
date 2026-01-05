@@ -47,21 +47,13 @@ enum
 	SYS_check_LRU_lists_free,
 	SYS_check_WS_list,
 	SYS_utilities,
-
-	/*2024*/
-	//TODO: [PROJECT'24.MS1 - #02] [2] SYSTEM CALLS - Add suitable code here
-
-	// makaty
-	SYS_sbrk,
-	SYS_free_user_mem,
+	SYS_get_optimal_num_faults,
 	SYS_allocate_user_mem,
-	// makaty
-	// zaid
+	SYS_free_user_mem,
+	//TODO: [PROJECT'25.IM#4] CPU SCHEDULING - #1 System Calls - Add suitable code here
+	//Your code is here
+
 	SYS_env_set_priority,
-	// zaid
-	SYS_initializeTheQueue,
-	SYS_sleepOnSemaphore,
-	SYS_signalToSemaphore,
 
 	//=====================================================================
 	NSYSCALLS

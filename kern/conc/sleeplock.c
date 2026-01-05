@@ -15,70 +15,77 @@
 void init_sleeplock(struct sleeplock *lk, char *name)
 {
 	init_channel(&(lk->chan), "sleep lock channel");
-	init_spinlock(&(lk->lk), "lock of sleep lock");
+	char prefix[30] = "lock of sleeplock - ";
+	char guardName[30+NAMELEN];
+	strcconcat(prefix, name, guardName);
+	init_kspinlock(&(lk->lk), guardName);
 	strcpy(lk->name, name);
 	lk->locked = 0;
 	lk->pid = 0;
 }
 
-int holding_sleeplock(struct sleeplock *lk)
+void acquire_sleeplock(struct sleeplock *lk)
 {
-	int r;
-	acquire_spinlock(&(lk->lk));
-	r = lk->locked && (lk->pid == get_cpu_proc()->env_id);
-	release_spinlock(&(lk->lk));
-	return r;
-}
+	//TODO: [PROJECT'25.IM#5] KERNEL PROTECTION: #4 SLEEP LOCK - acquire_sleeplock
+	//Your code is here
+	//Comment the following line
+	//panic("acquire_sleeplock() is not implemented yet...!!");
 
-//==========================================================================
+	//cprintf("acquire_sleeplock called. \n");
 
-void acquire_sleeplock(struct sleeplock *lk) //TAMAM//
-{
-	//TODO: [PROJECT'24.MS1 - #13] [4] LOCKS - acquire_sleeplock
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-//	if(holding_sleeplock(lk)) {
-//		panic("acquire sleep lock is already held by the same CPU.", lk->name);
-//	}
 
-	//cprintf("aquire_sleeplock called with lock: %s\n", lk->name);
+	struct kspinlock *guard_lk_ptr = &(lk->lk);
+	struct Channel* chan_ptr = &(lk->chan);
 
-	struct Env_Queue *q = &(lk->chan.queue);
-	struct Env *env = get_cpu_proc();
-	struct spinlock *guard = &(lk->lk);
-	acquire_spinlock(guard);
+	acquire_kspinlock(guard_lk_ptr);
 
-	while(lk->locked) {
-		//cprintf("enqueue : id = %d \n", env->env_id);
-		sleep(&(lk->chan), guard);
+	while((lk->locked)) {
+		//cprintf("ENV. ID : %d \n", env->env_id);
+		sleep(chan_ptr, guard_lk_ptr); // sleep on that channel
 	}
 
 
-	lk->locked = 1;
-	release_spinlock(guard);
-	//panic("acquire_sleeplock is not implemented yet");
-	//Your Code is Here...
+	lk->locked = 1; // acquire lock again when wakeup
+
+	release_kspinlock(guard_lk_ptr); // release guard
+
+	//cprintf("acquire_sleeplock finish. \n");
+
 
 }
 
 void release_sleeplock(struct sleeplock *lk)
 {
-	//cprintf("release_sleeplock called with lock: %s\n", lk->name);
-	struct Env_Queue *q = &(lk->chan.queue);
-	acquire_spinlock(&(lk->lk));
+	//TODO: [PROJECT'25.IM#5] KERNEL PROTECTION: #5 SLEEP LOCK - release_sleeplock
+	//Your code is here
+	//Comment the following line
+	//panic("release_sleeplock() is not implemented yet...!!");
 
-	if(queue_size(q) > 0) { // if exists any sleeping processes wakup them all.
+	//cprintf("release_sleeplock begin. \n");
+
+	struct Env_Queue *env_queue_ptr = &(lk->chan.queue);
+
+	acquire_kspinlock(&(lk->lk));
+
+	if(queue_size(env_queue_ptr) > 0) { // wake up sleeping processes
 		wakeup_all(&(lk->chan));
-
 	}
+
 	lk->locked = 0;
 
-	release_spinlock(&(lk->lk));
-	//panic("release_sleeplock is not implemented yet");
-	//Your Code is Here...
+	release_kspinlock(&(lk->lk));
 
+	//cprintf("release_sleeplock finished. \n");
 }
 
-
+int holding_sleeplock(struct sleeplock *lk)
+{
+	int r;
+	acquire_kspinlock(&(lk->lk));
+	r = lk->locked && (lk->pid == get_cpu_proc()->env_id);
+	release_kspinlock(&(lk->lk));
+	return r;
+}
 
 
 

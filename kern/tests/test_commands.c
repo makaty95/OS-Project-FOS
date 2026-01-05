@@ -111,7 +111,7 @@ int TestAutoCompleteCommand()
 	int ret = process_command(ARRAY_LENGTH(args1), args1);
 	cprintf("==>Testing now AUTOCOMPLETE for: kernel_info\n");
 	if (ret == getIndexOfCommand(args1[0]) && LIST_EMPTY(&foundCommands))
-		eval += 15;
+		eval += 5;
 	else
 		cprintf("#1: WRONG - process_command return wrong value or foundCommands is not empty.\n");
 
@@ -125,35 +125,43 @@ int TestAutoCompleteCommand()
 	else
 		cprintf("#2: WRONG - process_command return wrong value or foundCommands is not empty.\n");
 
-	// CASE3: should print invalid number of args
+	// CASE3.1: should print invalid number of args
 	cprintf("==>Testing now AUTOCOMPLETE for: wm\n");
-	char *args3[] = {"wm"};
-	cprintf("va of args3 = %x, *args3 = %x\n", args3, *args3);
-	ret = process_command(ARRAY_LENGTH(args3), args3);
-	if (ret == CMD_INV_NUM_ARGS && hasExpectedCommands(args3, 1))
+	char *args3_1[] = {"wm"};
+	ret = process_command(ARRAY_LENGTH(args3_1), args3_1);
+	if (ret == CMD_INV_NUM_ARGS && hasExpectedCommands(args3_1, 1))
 		eval += 15;
 	else
-		cprintf("#3: WRONG - process_command return wrong value or foundCommands contains wrong values.\n");
+		cprintf("#3.1: WRONG - process_command return wrong value or foundCommands contains wrong values.\n");
+
+	// CASE3.2: should print invalid number of args
+	cprintf("==>Testing now AUTOCOMPLETE for: lru\n");
+	char *args3_2[] = {"lru", "2", "1"};
+	ret = process_command(ARRAY_LENGTH(args3_2), args3_2);
+	if (ret == CMD_INV_NUM_ARGS && hasExpectedCommands(args3_2, 1))
+		eval += 15;
+	else
+		cprintf("#3.2: WRONG - process_command return wrong value or foundCommands contains wrong values.\n");
 
 	// CASE4: should print invalid command
 	cprintf("==>Testing now AUTOCOMPLETE for: smm\n");
 	char *args4[] = {"smm"};
 	ret = process_command(ARRAY_LENGTH(args4), args4);
 	if (ret == CMD_INVALID && LIST_SIZE(&foundCommands) == 0)
-		eval += 15;
+		eval += 10;
 	else
 		cprintf("#4: WRONG - process_command return wrong value or foundCommands is not empty.\n");
 
-	// CASE5: should print the commands that start with he ---> Shall print (help)
+	// CASE5: should print the commands that contains he
 	cprintf("==>Testing now AUTOCOMPLETE for: he\n");
 	char *args5[] = {"he"};
 	ret = process_command(ARRAY_LENGTH(args5), args5);
 	if (ret == CMD_MATCHED && hasExpectedCommands((char *[]){"help", "sched?", "uhbestfit", "uhnextfit", "uheap?", "khbestfit", "khnextfit", "kheap?", "schedRR", "schedTest", "schedBSD", "schedMLFQ"}, 12))
-		eval += 10;
+		eval += 15;
 	else
 		cprintf("#5: WRONG - process_command return wrong value or foundCommands is has wrong values.\n");
 
-	// CASE6: should print the commands that start with ru ---> Shall print (rum, rub, rut, run, runall) .. Each in a separate line
+	// CASE6: should print the commands that contains ru ---> Shall print (rum, rub, rut, run, runall) .. Each in a separate line
 	cprintf("==>Testing now AUTOCOMPLETE for: ru\n");
 	char *args6[] = {"ru"};
 	ret = process_command(ARRAY_LENGTH(args6), args6);
@@ -167,7 +175,7 @@ int TestAutoCompleteCommand()
 	char *args7[] = {"load", "game"};
 	ret = process_command(ARRAY_LENGTH(args7), args7);
 	if (ret == getIndexOfCommand(args7[0]) && LIST_EMPTY(&foundCommands))
-		eval += 10;
+		eval += 5;
 	else
 		cprintf("#7: WRONG - process_command return wrong value or foundCommands is not empty.\n");
 
@@ -180,8 +188,9 @@ int TestAutoCompleteCommand()
 	else
 		cprintf("#8: WRONG - process_command return wrong value or foundCommands is not empty.\n");
 
-	cprintf("test autocomplete completed. Evaluation = %d%%\n", eval);
-	cprintf("=================\n\n");
+//	cprintf("test autocomplete completed. Evaluation = %d%%\n", eval);
+//	cprintf("=================\n\n");
+	cprintf("[AUTO_GR@DING_PARTIAL]%d\n", eval);
 
 	return 0;
 }
@@ -459,6 +468,92 @@ int test_pt_clear_page_table_entry_invalid_va()
 	return 0;
 }
 
+//=====================================
+// 4) TEST CONVERTING VA 2 PA:
+//=====================================
+int test_virtual_to_physical()
+{
+	int kilo = 1024 ;
+	int mega = 1024*1024 ;
+	uint32 va;
+	ClearUserSpace(ptr_page_directory);
+
+	//============================
+	//Case 1: Check getting pa of a va with NO table
+	va = 0xeebfe000;
+	int pa = virtual_to_physical(ptr_page_directory, va);
+
+	//cprintf("va = %x, pa = %x, ret pa = %d\n", va, CA(ptr_page_directory, va), pa);
+	if(pa != -1)
+		panic("[EVAL] #1 Test of virtual_to_physical Entry Failed.\n");
+
+	//============================
+	//Case 2: Check getting pa of a va with a table
+	va = 0xf0000000;
+	pa = virtual_to_physical(ptr_page_directory, va);
+
+	//cprintf("va = %x, pa = %x, ret pa = %x\n", va, CA(ptr_page_directory, va), pa);
+	if(pa != CA(ptr_page_directory, va))
+		panic("[EVAL] #2 Test of virtual_to_physical Entry Failed.\n");
+
+	//============================
+	char ap1[100] = "ap 0x2800000";execute_command(ap1);
+	va = 0x2800000;
+	pa = virtual_to_physical(ptr_page_directory, va);
+
+	//cprintf("va = %x, pa = %x, ret pa = %x\n", va, CA(ptr_page_directory, va), pa);
+	if(pa != CA(ptr_page_directory, va))
+		panic("[EVAL] #3 Test of virtual_to_physical Entry Failed.\n");
+
+	//============================
+	char ap2[100] = "ap 0x2801000";execute_command(ap2);
+	va = 0x2801000;
+	pa = virtual_to_physical(ptr_page_directory, va);
+
+	//cprintf("va = %x, pa = %x, ret pa = %x\n", va, CA(ptr_page_directory, va), pa);
+	if(pa != CA(ptr_page_directory, va))
+		panic("[EVAL] #4 Test of virtual_to_physical Entry Failed.\n");
+
+	//============================
+	char ap3[100] = "ap 0x2802000";execute_command(ap3);
+	va = 0x2802000;
+	pa = virtual_to_physical(ptr_page_directory, va);
+
+	//cprintf("va = %x, pa = %x, ret pa = %x\n", va, CA(ptr_page_directory, va), pa);
+	if(pa != CA(ptr_page_directory, va))
+		panic("[EVAL] #5 Test of virtual_to_physical Entry Failed.\n");
+
+	//============================
+	va = 0xF0001000;
+	pa = virtual_to_physical(ptr_page_directory, va);
+
+	//cprintf("va = %x, pa = %x, ret pa = %x\n", va, CA(ptr_page_directory, va), pa);
+	if(pa != CA(ptr_page_directory, va))
+		panic("[EVAL] #6 Test of virtual_to_physical Entry Failed.\n");
+
+	//============================
+	va = 0xF0001005;
+	pa = virtual_to_physical(ptr_page_directory, va);
+
+	//cprintf("va = %x, pa = %x, ret pa = %x\n", va, CA(ptr_page_directory, va), pa);
+	if(pa != CA(ptr_page_directory, va))
+		panic("[EVAL] #7 Test of virtual_to_physical Entry Failed.\n");
+
+	//============================
+	char ap4[100] = "ap 0xeebfe000";execute_command(ap4);
+	va = 0xeebfe000;
+	pa = virtual_to_physical(ptr_page_directory, va);
+
+	//cprintf("va = %x, pa = %x, ret pa = %x\n", va, CA(ptr_page_directory, va), pa);
+	if(pa != CA(ptr_page_directory, va))
+		panic("[EVAL] #8 Test of virtual_to_physical Entry Failed.\n");
+
+	//============================
+	cprintf("Congratulations!! test virtual_to_physical completed successfully.\n");
+
+	return 0;
+}
+//===============================================================================================
 
 /*******************************/
 /*TESTs OF CHUNKS MANIPULATION */
@@ -2140,7 +2235,7 @@ int CA(uint32 *ptr_dir, uint32 va)
 	assert(USE_KHEAP == 0) ;
 	if (!(ptr_dir[((((uint32) (va)) >> 22) & 0x3FF)] & 1)) return 0;
 	uint32 *table = (STATIC_KERNEL_VIRTUAL_ADDRESS(ptr_dir[((((uint32) (va)) >> 22) & 0x3FF)] & ~0xFFF));
-	return table[((((uint32) (va)) >> 12) & 0x3FF)]&~0x00000FFF;
+	return (table[((((uint32) (va)) >> 12) & 0x3FF)]&~0x00000FFF) + (va & 0xFFF);
 }
 
 int CE(uint32 *_d, uint32 va)

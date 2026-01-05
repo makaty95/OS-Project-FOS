@@ -19,8 +19,9 @@ int cut_paste_pages(uint32* page_directory, uint32 source_va, uint32 dest_va, ui
 int copy_paste_chunk(uint32* page_directory, uint32 source_va, uint32 dest_va, uint32 size);
 int share_chunk(uint32* page_directory, uint32 source_va,uint32 dest_va, uint32 size, uint32 perms) ;
 int allocate_chunk(uint32* page_directory, uint32 va, uint32 size, uint32 perms) ;
-/*BONUS*/ void calculate_allocated_space(uint32* page_directory, uint32 sva, uint32 eva, uint32 *num_tables, uint32 *num_pages) ;
-/*BONUS*/ uint32 calculate_required_frames(uint32* page_directory, uint32 sva, uint32 size);
+uint32 calculate_free_space(uint32* page_directory, uint32 sva, uint32 eva);
+void calculate_allocated_space(uint32* page_directory, uint32 sva, uint32 eva, uint32 *num_tables, uint32 *num_pages) ;
+uint32 calculate_required_frames(uint32* page_directory, uint32 sva, uint32 size);
 
 /*******************************/
 /*[2] USER CHUNKS MANIPULATION */

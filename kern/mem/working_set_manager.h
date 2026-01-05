@@ -5,7 +5,6 @@
  *      Author: HP
  */
 
-
 #ifndef KERN_MEM_WORKING_SET_MANAGER_H_
 #define KERN_MEM_WORKING_SET_MANAGER_H_
 

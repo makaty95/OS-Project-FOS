@@ -17,205 +17,317 @@
 /***********************************************************************************************************************/
 #define Mega  (1024*1024)
 #define kilo (1024)
-#define numOfAllocs 7
-#define allocCntPerSize 200
-#define sizeOfMetaData 8
+#define numOfLevels (LOG2_MAX_SIZE - LOG2_MIN_SIZE + 1)
 
-//NOTE: these sizes include the size of MetaData within it
-uint32 allocSizes[numOfAllocs] = {4*kilo, 20*sizeof(char) + sizeOfMetaData, 1*kilo, 3*sizeof(int) + sizeOfMetaData, 2*kilo, 2*sizeOfMetaData, 7*kilo} ;
-short* startVAs[numOfAllocs*allocCntPerSize+1] ;
-short* midVAs[numOfAllocs*allocCntPerSize+1] ;
-short* endVAs[numOfAllocs*allocCntPerSize+1] ;
+short* startVAsInit[DYN_ALLOC_MAX_BLOCK_SIZE + 1] ;
+short* endVAsInit[DYN_ALLOC_MAX_BLOCK_SIZE + 1] ;
 
-int check_block(void* va, void* expectedVA, uint32 expectedSize, uint8 expectedFlag)
+__inline__ uint8 IDX(uint32 size)
 {
-	//Check returned va
-	if(va != expectedVA)
+	size>>= LOG2_MIN_SIZE;
+	int index = 0;
+	while ((size>>=1) != 0)
 	{
-		cprintf("wrong block address. Expected %x, Actual %x\n", expectedVA, va);
+		index++;
+	}
+	return index;
+}
+
+int check_dynalloc_datastruct(uint32 curSize, uint32 numOfBlksAtCurSize)
+{
+	int maxNumOfBlksPerPage = PAGE_SIZE / curSize;
+	int expectedNumOfCompletePages = numOfBlksAtCurSize / maxNumOfBlksPerPage;
+	int expectedNumOfInCompletePages = numOfBlksAtCurSize % maxNumOfBlksPerPage != 0? 1 : 0;
+	int expectedNumOfFreeBlks = expectedNumOfInCompletePages * (maxNumOfBlksPerPage - numOfBlksAtCurSize % maxNumOfBlksPerPage);
+
+	//[1] Check PageBlkInfoArr
+	int numOfPages = DYN_ALLOC_MAX_SIZE / PAGE_SIZE;
+	int actualNumOfCompletePages = 0;
+	int actualNumOfInCompletePages = 0;
+	int actualNumOfFreeBlks = 0;
+	for (int i = 0; i < numOfPages; ++i)
+	{
+		if (pageBlockInfoArr[i].block_size == curSize)
+		{
+			if (pageBlockInfoArr[i].num_of_free_blocks == 0)
+			{
+				actualNumOfCompletePages++;
+			}
+			else
+			{
+				actualNumOfInCompletePages++;
+				actualNumOfFreeBlks += pageBlockInfoArr[i].num_of_free_blocks;
+			}
+		}
+	}
+	if (actualNumOfCompletePages != expectedNumOfCompletePages ||
+			actualNumOfInCompletePages != expectedNumOfInCompletePages ||
+			actualNumOfFreeBlks != expectedNumOfFreeBlks)
+	{
+		cprintf_colored(TEXT_TESTERR_CLR, "PageBlkInfoArr is not set/updated correctly!\n");
+//		cprintf_colored(TEXT_cyan, "actualNumOfCompletePages = %d, expectedNumOfCompletePages = %d\n", actualNumOfCompletePages, expectedNumOfCompletePages);
+//		cprintf_colored(TEXT_cyan, "actualNumOfInCompletePages = %d, expectedNumOfInCompletePages = %d\n", actualNumOfInCompletePages, expectedNumOfInCompletePages);
+//		cprintf_colored(TEXT_cyan, "actualNumOfFreeBlks = %d, expectedNumOfFreeBlks = %d\n", actualNumOfFreeBlks, expectedNumOfFreeBlks);
 		return 0;
 	}
-	//Check header & footer
-	cprintf("%x\n", va);
-	uint32 header = *((uint32*)va-1);
-	uint32 footer = *((uint32*)(va + expectedSize - 8));
-	uint32 expectedData = expectedSize | expectedFlag ;
-	if(header != expectedData || footer != expectedData)
+
+	//[2] Check freeBlkLists
+	int index = IDX(curSize);
+	struct BlockElement_List *ptrList = &freeBlockLists[index];
+	int n = 0;
+	struct BlockElement *ptrBlk;
+	LIST_FOREACH(ptrBlk, ptrList)
 	{
-		cprintf("wrong header/footer data. Expected %d, Actual H:%d F:%d\n", expectedData, header, footer);
+		n++;
+	}
+	if (LIST_SIZE(ptrList) != expectedNumOfFreeBlks || n != expectedNumOfFreeBlks)
+	{
+		cprintf_colored(TEXT_TESTERR_CLR,"freeBlockLists[%d] is not updated correctly!", index);
 		return 0;
 	}
 	return 1;
 }
-int check_list_size(uint32 expectedListSize)
+
+
+extern uint32* ptr_page_directory;
+extern void unmap_frame(uint32 *ptr_page_directory, uint32 virtual_address);
+extern uint32 sys_calculate_free_frames() ;
+
+void remove_current_mappings(uint32 startVA, uint32 endVA)
 {
-	if (LIST_SIZE(&freeBlocksList) != expectedListSize)
+	assert(startVA >= KERNEL_HEAP_START && endVA >= KERNEL_HEAP_START);
+	for (uint32 va = startVA; va < endVA; va+=PAGE_SIZE)
 	{
-		cprintf("freeBlocksList: wrong size! expected %d, actual %d\n", expectedListSize, LIST_SIZE(&freeBlocksList));
-		return 0;
+		unmap_frame(ptr_page_directory, va);
 	}
-	return 1;
 }
 /***********************************************************************************************************************/
 
 void test_initialize_dynamic_allocator()
 {
 #if USE_KHEAP
-	panic("test_initialize_dynamic_allocator: the kernel heap should be diabled. make sure USE_KHEAP = 0");
-	return;
+	panic("test_initialize_dynamic_allocator: the kernel heap should be disabled. make sure USE_KHEAP = 0");
+	return ;
 #endif
 
-	//write initial data at the start (for checking)
-	int* tmp_ptr = (int*)KERNEL_HEAP_START;
-	*tmp_ptr = -1 ;
-	*(tmp_ptr+1) = 1 ;
+	cprintf_colored(TEXT_yellow, "==============================================\n");
+	cprintf_colored(TEXT_yellow, "MAKE SURE to have a FRESH RUN for this test\n(i.e. don't run ANYTHING before or after it)\n");
+	cprintf_colored(TEXT_yellow, "==============================================\n");
 
-	uint32 initAllocatedSpace = 2*Mega;
-	initialize_dynamic_allocator(KERNEL_HEAP_START, initAllocatedSpace);
+	initialize_dynamic_allocator(KERNEL_HEAP_START - DYN_ALLOC_MAX_SIZE, KERNEL_HEAP_START);
 
-
-	//Check#1: Metadata
-	uint32* daBeg = (uint32*) KERNEL_HEAP_START ;
-	uint32* daEnd = (uint32*) (KERNEL_HEAP_START +  initAllocatedSpace - sizeof(int));
-	uint32* blkHeader = (uint32*) (KERNEL_HEAP_START + sizeof(int));
-	uint32* blkFooter = (uint32*) (KERNEL_HEAP_START +  initAllocatedSpace - 2*sizeof(int));
-	if (*daBeg != 1 || *daEnd != 1 || (*blkHeader != initAllocatedSpace - 2*sizeof(int))|| (*blkFooter != initAllocatedSpace - 2*sizeof(int)))
+	//Check#1: Limits
+	cprintf_colored(TEXT_cyan, "\nCheck#1: Limits \n");
+	if (dynAllocStart != KERNEL_HEAP_START  - DYN_ALLOC_MAX_SIZE || dynAllocEnd != KERNEL_HEAP_START )
 	{
-		panic("Content of header/footer and/or DA begin/end are not set correctly");
+		panic("DA limits are not set correctly");
 	}
-	if (LIST_SIZE(&freeBlocksList) != 1 || (uint32)LIST_FIRST(&freeBlocksList) != KERNEL_HEAP_START + 2*sizeof(int))
+	//Check#2: PageBlockInfoArr
+	cprintf_colored(TEXT_cyan, "\nCheck#2: PageBlockInfoArr \n");
+	int numOfPages = DYN_ALLOC_MAX_SIZE / PAGE_SIZE;
+	for (int i = 0; i < numOfPages; ++i)
 	{
-		panic("free block is not added correctly");
+		if (pageBlockInfoArr[i].block_size || pageBlockInfoArr[i].num_of_free_blocks)
+		{
+			panic("DA pageBlockInfoArr are not initialized correctly");
+		}
+	}
+	//Check#3: freePagesList
+	cprintf_colored(TEXT_cyan, "\nCheck#3: freePagesList \n");
+	int n = 0;
+	struct PageInfoElement *ptrPI;
+	LIST_FOREACH(ptrPI, &freePagesList)
+	{
+		if (ptrPI != &pageBlockInfoArr[n])
+		{
+			cprintf("n: %d\n", n);
+			cprintf("extected: %p\n", (uint32*)&pageBlockInfoArr[n]);
+			cprintf("actual: %p\n", (int32*)ptrPI);
+			panic("DA freePagesList is not initialized correctly! Make sure that the pages are added to the list in their correct order");
+		}
+		n++;
+	}
+	if (LIST_SIZE(&freePagesList) != numOfPages || n != numOfPages)
+	{
+		panic("DA freePagesList is not initialized correctly! one or more pages are not added correctly");
+	}
+	//Check#4: freeBlockLists
+	cprintf_colored(TEXT_cyan, "\nCheck#4: freeBlockLists \n");
+	int numOfSizes = LOG2_MAX_SIZE - LOG2_MIN_SIZE + 1;
+	for (int i = 0; i < numOfSizes; ++i)
+	{
+		struct BlockElement_List *ptrList = &freeBlockLists[i];
+		if (LIST_SIZE(ptrList) || LIST_FIRST(ptrList) || LIST_LAST(ptrList))
+		{
+			panic("DA freeBlockLists[%d] is not initialized correctly!", i);
+		}
 	}
 
-	cprintf("Congratulations!! test initialize_dynamic_allocator completed successfully.\n");
+	cprintf_colored(TEXT_light_green,
+			"============================================================================="
+			"\nCongratulations!! test initialize_dynamic_allocator completed successfully.\n"
+			"=============================================================================\n");
 }
 
-
-int test_initial_alloc(int ALLOC_STRATEGY)
+int test_initial_alloc()
 {
 #if USE_KHEAP
 	panic("test_initial_alloc: the kernel heap should be disabled. make sure USE_KHEAP = 0");
 	return 0;
 #endif
 
+	cprintf_colored(TEXT_yellow, "==============================================\n");
+	cprintf_colored(TEXT_yellow, "MAKE SURE to have a FRESH RUN for this test\n(i.e. don't run ANYTHING before or after it)\n");
+	cprintf_colored(TEXT_yellow, "==============================================\n");
+
+	//Remove the current 1-to-1 mapping of the KERNEL HEAP area since the USE_KHEAP = 0 for this test
+	uint32 startDA = KERNEL_HEAP_START ;
+	uint32 sizeDA = 0x2AE000 ;
+	uint32 endDA = KERNEL_HEAP_START + sizeDA ;
+	remove_current_mappings(startDA, endDA);
+	initialize_dynamic_allocator(startDA, endDA);
+
 	int eval = 0;
 	bool is_correct = 1;
-	int initAllocatedSpace = 3*Mega;
-	initialize_dynamic_allocator(KERNEL_HEAP_START, initAllocatedSpace);
 
-	void * va ;
+	int freeFramesBefore = sys_calculate_free_frames();
+	void *va ;
 	//====================================================================//
-	/*INITIAL ALLOC Scenario 1: Try to allocate a block with a size greater than the size of any existing free block*/
-	cprintf("	1: Try to allocate large block [not fit in any space]\n\n") ;
+	/*INITIAL ALLOC Scenario 1: Allocate set of blocks for each possible block size (consume entire space)*/
+	cprintf_colored(TEXT_cyan, "\n1: Allocate set of blocks for each possible block size (consume entire space)\n\n") ;
+	int curSize = 1<<LOG2_MIN_SIZE ;
+	int numOfBlksAtCurSize = 0;
+	int maxNumOfBlksAtCurPage = PAGE_SIZE / curSize;
+	uint32 expectedVA = KERNEL_HEAP_START;
+	for (int s = 1; s <= DYN_ALLOC_MAX_BLOCK_SIZE; ++s)
+	{
+		va = alloc_block(s);
+		startVAsInit[s] = va; *startVAsInit[s] = s ;
+		endVAsInit[s] = va + curSize - sizeof(short); *endVAsInit[s] = s ;
 
-	is_correct = 1;
-	va = alloc_block(3*initAllocatedSpace, ALLOC_STRATEGY);
-
-	//Check returned va
-	if(va != NULL)
-	{
-		is_correct = 0;
-		cprintf("alloc_block_xx #1: should not be allocated.\n");
-	}
-	va = alloc_block(initAllocatedSpace, ALLOC_STRATEGY);
-
-	//Check returned va
-	if(va != NULL)
-	{
-		is_correct = 0;
-		cprintf("alloc_block_xx #2: should not be allocated.\n");
-	}
-
-	if (is_correct)
-	{
-		eval += 5;
-	}
-	//====================================================================//
-	/*INITIAL ALLOC Scenario 2: Try to allocate set of blocks with different sizes*/
-	cprintf("	2: Try to allocate set of blocks with different sizes [all should fit]\n\n") ;
-	is_correct = 1;
-	void* expectedVA;
-	uint32 expectedNumFreeBlks;
-	int totalSizes = 0;
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		totalSizes += allocSizes[i] * allocCntPerSize ;
-	}
-	int remainSize = initAllocatedSpace - totalSizes - 2*sizeof(int) ; //exclude size of "DA Begin & End" blocks
-	//cprintf("\n********* Remaining size = %d\n", remainSize);
-	if (remainSize <= 0)
-	{
-		is_correct = 0;
-		cprintf("alloc_block_xx test is not configured correctly. Consider updating the initial allocated space OR the required allocations\n");
-	}
-	int idx = 0;
-	void* curVA = (void*) KERNEL_HEAP_START + sizeof(int) ; //just after the "DA Begin" block
-	uint32 actualSize;
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		for (int j = 0; j < allocCntPerSize; ++j)
-		{
-			actualSize = allocSizes[i] - sizeOfMetaData;
-			va = startVAs[idx] = alloc_block(actualSize, ALLOC_STRATEGY);
-			midVAs[idx] = va + actualSize/2 ;
-			endVAs[idx] = va + actualSize - sizeof(short);
-			//Check block
-			expectedVA = (curVA + sizeOfMetaData/2);
-			if (check_block(va, expectedVA, allocSizes[i], 1) == 0)
-			{
-				is_correct = 0;
-			}
-			curVA += allocSizes[i] ;
-			*(startVAs[idx]) = idx ;
-			*(midVAs[idx]) = idx ;
-			*(endVAs[idx]) = idx ;
-			idx++;
-		}
-		//if (is_correct == 0)
-		//break;
-	}
-	if (is_correct)
-	{
-		eval += 15;
-	}
-	if (check_list_size(1))
-	{
-		eval += 5;
-	}
-	//====================================================================//
-	/*INITIAL ALLOC Scenario 3: Try to allocate a block with a size equal to the size of the first existing free block*/
-	cprintf("	3: Try to allocate a block with equal to the first existing free block\n\n") ;
-	is_correct = 1;
-
-	actualSize = remainSize - sizeOfMetaData;
-	va = startVAs[idx] = alloc_block(actualSize, ALLOC_STRATEGY);
-	midVAs[idx] = va + actualSize/2 ;
-	endVAs[idx] = va + actualSize - sizeof(short);
-	//Check block
-	expectedVA = (curVA + sizeOfMetaData/2);
-
-	if (is_correct) is_correct = check_block(va, expectedVA, remainSize, 1) ;
-	if (is_correct) is_correct = check_list_size(0);
-
-	*(startVAs[idx]) = idx ;
-	*(midVAs[idx]) = idx ;
-	*(endVAs[idx]) = idx ;
-	if (is_correct)
-	{
-		eval += 5;
-	}
-	//====================================================================//
-	/*INITIAL ALLOC Scenario 4: Check stored data inside each allocated block*/
-	cprintf("	4: Check stored data inside each allocated block\n\n") ;
-	is_correct = 1;
-
-	for (int i = 0; i < idx; ++i)
-	{
-		if (*(startVAs[i]) != i || *(midVAs[i]) != i ||	*(endVAs[i]) != i)
+		numOfBlksAtCurSize++;
+		if (is_correct && ROUNDDOWN((uint32)va, PAGE_SIZE) != expectedVA)
 		{
 			is_correct = 0;
-			cprintf("alloc_block_xx #4.%d: WRONG! content of the block is not correct. Expected %d\n",i, i);
+			cprintf_colored(TEXT_TESTERR_CLR, "alloc_block test#1.%d: WRONG! VA is not correct. Expected VA = %x, Actual VA = %x\n", s, expectedVA, va);
+		}
+		if (s == curSize)
+		{
+			//apply the following check only on the 1st three levels
+			if (curSize <= 32)
+			{
+				if (is_correct)	eval += 5;
+				is_correct = 1;
+			}
+			if (check_dynalloc_datastruct(curSize, numOfBlksAtCurSize) == 0)
+			{
+				is_correct = 0;
+				cprintf_colored(TEXT_TESTERR_CLR, "alloc_block test#2.%d: WRONG! DA data structures are not correct\n", s);
+			}
+			if (is_correct)	eval += 5;
+			//Reinitialize
+			{
+				curSize <<= 1;
+				expectedVA += PAGE_SIZE;
+				numOfBlksAtCurSize = 0;
+				maxNumOfBlksAtCurPage = PAGE_SIZE / curSize;
+				is_correct = 1;
+			}
+		}
+		else if (numOfBlksAtCurSize % maxNumOfBlksAtCurPage == 0)
+		{
+			expectedVA += PAGE_SIZE;
+		}
+
+	}
+
+	//====================================================================//
+	/*INITIAL ALLOC Scenario 2: Allocate blocks of same size that consume remaining free blocks at all levels*/
+	cprintf_colored(TEXT_cyan, "\n2: Allocate blocks of same size that consume remaining free blocks at all levels\n\n") ;
+	is_correct = 1;
+	//calculate expected number of free blocks at all levels
+	int size1 = 0;
+	int size2 = DYN_ALLOC_MIN_BLOCK_SIZE;
+	int numOfRemFreeBlks[numOfLevels];
+	uint32 expectedPageIndex[numOfLevels];
+	uint32 prevAllocPages = 0;
+	int idx = 0;
+	while (size1 < DYN_ALLOC_MAX_BLOCK_SIZE)
+	{
+		int numOfAllocBlks = size2 - size1 ;
+		int expectedNumOfBlksPerPage = PAGE_SIZE / size2;
+		if (numOfAllocBlks % expectedNumOfBlksPerPage != 0)
+		{
+			numOfRemFreeBlks[idx] = expectedNumOfBlksPerPage - (numOfAllocBlks % expectedNumOfBlksPerPage) ;
+			expectedPageIndex[idx] = (prevAllocPages + numOfAllocBlks / expectedNumOfBlksPerPage) ;
+			prevAllocPages += numOfAllocBlks / expectedNumOfBlksPerPage + 1;
+		}
+		else
+		{
+			numOfRemFreeBlks[idx] = 0;
+			expectedPageIndex[idx] = 0;
+			prevAllocPages += numOfAllocBlks / expectedNumOfBlksPerPage;
+		}
+		size1 = size2 ;
+		size2 *= 2 ;
+		idx++;
+	}
+
+	//Allocate a number of blocks of same size to consume all the remaining free blocks
+	int blkSize = 1<<LOG2_MIN_SIZE ;
+	for (int i = 0; i < numOfLevels; ++i)
+	{
+		uint32 expectedVA = KERNEL_HEAP_START + expectedPageIndex[i] * PAGE_SIZE;
+		is_correct = 1;
+		//cprintf_colored(TEXT_cyan,  "Level#%d: num of remaining free blocks = %d\n", i, numOfRemFreeBlks[i]);
+		for (int j = 0; j < numOfRemFreeBlks[i]; ++j)
+		{
+			va = alloc_block(blkSize);
+			int *tmpVal = va ;
+			*tmpVal = 353 ;
+			if (ROUNDDOWN((uint32)va, PAGE_SIZE) != expectedVA)
+			{
+				is_correct = 0;
+				cprintf_colored(TEXT_TESTERR_CLR, "alloc_block test#3: WRONG! VA is not correct (i = %d, j = %d)\n", i, j);
+				cprintf("expected: %p\n", expectedVA);
+				cprintf("actual: %p\n", ROUNDDOWN((uint32)va, PAGE_SIZE));
+				cprintf("dif: %d\n", ROUNDDOWN((uint32)va, PAGE_SIZE) - expectedVA);
+				break;
+			}
+			if (*tmpVal != 353)
+			{
+				is_correct = 0;
+				cprintf_colored(TEXT_TESTERR_CLR, "alloc_block test#4: wrong stored value in the allocated block\n");
+			}
+		}
+
+		if (numOfRemFreeBlks[i] > 0)
+		{
+			if (LIST_SIZE(&freeBlockLists[i]) != 0)
+			{
+				is_correct = 0;
+				cprintf_colored(TEXT_TESTERR_CLR, "alloc_block test#5: WRONG! there's still free blocks at level %d while not expected to\n", i);
+			}
+			if (pageBlockInfoArr[expectedPageIndex[i]].num_of_free_blocks != 0)
+			{
+				is_correct = 0;
+				cprintf_colored(TEXT_TESTERR_CLR, "alloc_block test#6: WRONG! there's still free blocks at page %d while not expected to\n", expectedPageIndex[i]);
+			}
+			if (is_correct)	eval += 5;
+		}
+	}
+
+	//====================================================================//
+	/*INITIAL ALLOC Scenario 3: Check stored data inside each allocated block*/
+	cprintf_colored(TEXT_cyan, "\n3: Check stored data inside each allocated block\n\n") ;
+	is_correct = 1;
+
+	for (int s = 1; s <= DYN_ALLOC_MAX_BLOCK_SIZE; ++s)
+	{
+		if (*(startVAsInit[s]) != s || *(endVAsInit[s]) != s)
+		{
+			is_correct = 0;
+			cprintf_colored(TEXT_TESTERR_CLR, "alloc_block #7.%d: WRONG! content of the block is not correct. Expected %d\n",s, s);
 			break;
 		}
 	}
@@ -223,13 +335,29 @@ int test_initial_alloc(int ALLOC_STRATEGY)
 	{
 		eval += 10;
 	}
+	//====================================================================//
+	/*INITIAL ALLOC Scenario 4: Check allocated frames*/
+	cprintf_colored(TEXT_cyan, "\n4: Check allocated frames\n\n") ;
+	is_correct = 1;
+	int freeFramesAfter = sys_calculate_free_frames();
+	int expectedNumOfAllocPages = 686;
+	if (freeFramesBefore - freeFramesAfter != expectedNumOfAllocPages)
+	{
+		is_correct = 0;
+		cprintf_colored(TEXT_TESTERR_CLR, "alloc_block #8: WRONG! number of allocated frames is not as expected. Actual: %d, Expected: %d\n",freeFramesBefore - freeFramesAfter , expectedNumOfAllocPages);
+	}
+	if (is_correct)
+	{
+		eval += 10;
+	}
+
 	return eval;
 }
 
-void test_alloc_block_FF()
+void test_alloc_block()
 {
 #if USE_KHEAP
-	panic("test_alloc_block_FF: the kernel heap should be disabled. make sure USE_KHEAP = 0");
+	panic("test_alloc_block: the kernel heap should be disabled. make sure USE_KHEAP = 0");
 	return;
 #endif
 
@@ -238,2001 +366,308 @@ void test_alloc_block_FF()
 	void* va = NULL;
 	uint32 actualSize = 0;
 
-	cprintf("=======================================================\n") ;
-	cprintf("FIRST: Tests depend on the Allocate Function ONLY [40%]\n") ;
-	cprintf("=======================================================\n") ;
-	eval = test_initial_alloc(DA_FF);
+	eval = test_initial_alloc();
 
-	cprintf("====================================================\n") ;
-	cprintf("SECOND: Tests depend on BOTH Allocate and Free [60%] \n") ;
-	cprintf("====================================================\n") ;
-
-	//Free set of blocks with different sizes (first block of each size)
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		free_block(startVAs[i*allocCntPerSize]);
-	}
-	//Check number of freed blocks
-	is_correct = check_list_size(numOfAllocs);
-	if (is_correct)
-	{
-		eval += 10;
-	}
-	//====================================================================//
-	/*FF ALLOC Scenario 1: Try to allocate a block with a size greater than the size of any existing free block*/
-	cprintf("	1: Try to allocate large block [not fit in any space]\n\n") ;
-	is_correct = 1;
-
-	uint32 maxSize = 0 ;
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		if (allocSizes[i] > maxSize)
-			maxSize = allocSizes[i] ;
-	}
-	va = alloc_block(maxSize, DA_FF);
-
-	//Check returned va
-	if(va != NULL)
-	{
-		is_correct = 0;
-		cprintf("alloc_block_FF #5: WRONG FF ALLOC - alloc_block_FF find a block instead no existing free blocks with the given size.\n");
-	}
-
-	if (is_correct)
-	{
-		eval += 5;
-	}
-	//====================================================================//
-	/*FF ALLOC Scenario 2: Try to allocate blocks with sizes smaller than existing free blocks*/
-	cprintf("	2: Try to allocate set of blocks with different sizes smaller than existing free blocks\n\n") ;
-	is_correct = 1;
-	void* expectedVA;
-	uint32 expectedNumFreeBlks;
-#define numOfFFTests 3
-	uint32 startVA = KERNEL_HEAP_START + sizeof(int); //just after the DA Begin block
-	uint32 testSizes[numOfFFTests] = {1*kilo + kilo/2, 3*kilo, kilo/2} ;
-	uint32 startOf1st7KB = (uint32)startVAs[6*allocCntPerSize];
-	uint32 expectedVAs[numOfFFTests] = {startVA + sizeOfMetaData/2, startOf1st7KB, startVA + testSizes[0] + sizeOfMetaData/2};
-	short* tstStartVAs[numOfFFTests+2] ;
-	short* tstMidVAs[numOfFFTests+2] ;
-	short* tstEndVAs[numOfFFTests+2] ;
-	for (int i = 0; i < numOfFFTests; ++i)
-	{
-		actualSize = testSizes[i] - sizeOfMetaData;
-		va = tstStartVAs[i] = alloc_block(actualSize, DA_FF);
-		tstMidVAs[i] = va + actualSize/2 ;
-		tstEndVAs[i] = va + actualSize - sizeof(short);
-		//Check block
-		cprintf("test#%d\n",i);
-		expectedVA = (void*)expectedVAs[i];
-		if (check_block(va, expectedVA, testSizes[i], 1) == 0)
-		{
-			is_correct = 0;
-		}
-		*(tstStartVAs[i]) = 353;
-		*(tstMidVAs[i]) = 353;
-		*(tstEndVAs[i]) = 353;
-	}
-	if (is_correct) is_correct = check_list_size(numOfAllocs);
-	if (is_correct)
-	{
-		eval += 15;
-	}
-	//====================================================================//
-	/*FF ALLOC Scenario 3: Try to allocate a block with a size equal to the size of the first existing free block*/
-	cprintf("	3: Try to allocate a block with equal to the first existing free block\n\n") ;
-	is_correct = 1;
-
-	actualSize = 2*kilo - sizeOfMetaData;
-	va = tstStartVAs[numOfFFTests] = alloc_block(actualSize, DA_FF);
-	tstMidVAs[numOfFFTests] = va + actualSize/2 ;
-	tstEndVAs[numOfFFTests] = va + actualSize - sizeof(short);
-	//Check block
-	expectedVA = (void*)(startVA + testSizes[0] + testSizes[2] + sizeOfMetaData/2) ;
-
-	if (is_correct) is_correct = check_block(va, expectedVA, 2*kilo, 1);
-	if (is_correct) is_correct = check_list_size(numOfAllocs - 1);
-
-	*(tstStartVAs[numOfFFTests]) = 353 ;
-	*(tstMidVAs[numOfFFTests]) = 353 ;
-	*(tstEndVAs[numOfFFTests]) = 353 ;
-
-	if (is_correct)
-	{
-		eval += 10;
-	}
-	//====================================================================//
-	/*FF ALLOC Scenario 4: Try to allocate a block with a bit smaller size [internal fragmentation case]*/
-	cprintf("	4: Try to allocate a block with a bit smaller size [internal fragmentation case]\n\n") ;
-	is_correct = 1;
-
-	actualSize = allocSizes[1] - sizeOfMetaData - 10;
-	va = tstStartVAs[numOfFFTests+1] = alloc_block(actualSize, DA_FF);
-	tstMidVAs[numOfFFTests+1] = va + actualSize/2 ;
-	tstEndVAs[numOfFFTests+1] = va + actualSize - sizeof(short);
-	//Check block
-	expectedVA = startVAs[1*allocCntPerSize];
-
-	if (is_correct) is_correct = check_block(va, expectedVA, allocSizes[1], 1);
-	if (is_correct) is_correct = check_list_size(numOfAllocs - 2);
-
-	*(tstStartVAs[numOfFFTests+1]) = 353 ;
-	*(tstMidVAs[numOfFFTests+1]) = 353 ;
-	*(tstEndVAs[numOfFFTests+1]) = 353 ;
-
-	if (is_correct)
-	{
-		eval += 10;
-	}
-	//====================================================================//
-	/*FF ALLOC Scenario 5: Check stored data inside each allocated block*/
-	cprintf("	5: Check stored data inside each allocated block\n\n") ;
-	is_correct = 1;
-
-	for (int i = 0; i < numOfFFTests + 2; ++i)
-	{
-		//cprintf("startVA = %x, mid = %x, last = %x\n", tstStartVAs[i], tstMidVAs[i], tstEndVAs[i]);
-		if (*(tstStartVAs[i]) != 353 || *(tstMidVAs[i]) != 353 || *(tstEndVAs[i]) != 353)
-		{
-			is_correct = 0;
-			cprintf("alloc_block_FF #8.%d: WRONG! content of the block is not correct. Expected=%d, val1=%d, val2=%d, val3=%d\n",i, 353, *(tstStartVAs[i]), *(tstMidVAs[i]), *(tstEndVAs[i]));
-			break;
-		}
-	}
-
-	if (is_correct)
-	{
-		eval += 10;
-	}
-	cprintf("test alloc_block_FF completed. Evaluation = %d%\n", eval);
+	cprintf_colored(TEXT_light_green, "test alloc_block Evaluation = %d%\n", eval);
+	return ;
 }
 
-void test_alloc_block_BF()
+void test_free_block()
 {
-#if USE_KHEAP
-	panic("test_alloc_block_BF: the kernel heap should be disabled. make sure USE_KHEAP = 0");
-	return;
-#endif
-
-	int eval = 0;
-	bool is_correct;
-	void* va = NULL;
-	uint32 actualSize = 0;
-
-	cprintf("=======================================================\n") ;
-	cprintf("FIRST: Tests depend on the Allocate Function ONLY [40%]\n") ;
-	cprintf("=======================================================\n") ;
-	eval = test_initial_alloc(DA_BF);
-
-	cprintf("====================================================\n") ;
-	cprintf("SECOND: Tests depend on BOTH Allocate and Free [60%] \n") ;
-	cprintf("====================================================\n") ;
-	void* expectedVA;
-	uint32 expectedNumFreeBlks;
-	//Free set of blocks with different sizes (first block of each size)
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		free_block(startVAs[i*allocCntPerSize]);
-	}
-	//Check number of freed blocks
-	is_correct = check_list_size(numOfAllocs);
-	if (is_correct)
-	{
-		eval += 10;
-	}
-	//====================================================================//
-	/*BF ALLOC Scenario 1: Try to allocate a block with a size greater than the size of any existing free block*/
-	cprintf("	1: Try to allocate large block [not fit in any space]\n\n") ;
-	is_correct = 1;
-
-	uint32 maxSize = 0 ;
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		if (allocSizes[i] > maxSize)
-			maxSize = allocSizes[i] ;
-	}
-	va = alloc_block(maxSize, DA_BF);
-
-	//Check returned va
-	if(va != NULL)
-	{
-		is_correct = 0;
-		cprintf("alloc_block_BF #5: WRONG BF ALLOC - alloc_block_BF find a block instead no existing free blocks with the given size.\n");
-	}
-	if (is_correct)
-	{
-		eval += 5;
-	}
-	//====================================================================//
-	/*BF ALLOC Scenario 2: Try to allocate blocks with sizes smaller than existing free blocks*/
-	cprintf("	2: Try to allocate set of blocks with different sizes smaller than existing free blocks\n\n") ;
-	is_correct = 1;
-
-#define numOfBFTests 5
-	uint32 testSizes[numOfBFTests] = {
-			/*only 1 can fit*/4*kilo + kilo/2,
-			/*many can fit*/ 1*kilo + kilo/4,
-			/*many can fit*/kilo/2,
-			/*many can fit*/kilo/2,
-			/*only 1 can fit (@head)*/3*kilo } ;
-	uint32 startOf1st1KB = (uint32)startVAs[2*allocCntPerSize];
-	uint32 startOf1st2KB = (uint32)startVAs[4*allocCntPerSize];
-	uint32 startOf1st7KB = (uint32)startVAs[6*allocCntPerSize];
-
-	uint32 expectedVAs[numOfBFTests] = {startOf1st7KB, startOf1st2KB, startOf1st2KB + testSizes[1],startOf1st1KB, KERNEL_HEAP_START + 2*sizeof(int)};
-	short* tstStartVAs[numOfBFTests+2] ;
-	short* tstMidVAs[numOfBFTests+2] ;
-	short* tstEndVAs[numOfBFTests+2] ;
-	for (int i = 0; i < numOfBFTests; ++i)
-	{
-		actualSize = testSizes[i] - sizeOfMetaData;
-		va = tstStartVAs[i] = alloc_block(actualSize, DA_BF);
-		tstMidVAs[i] = va + actualSize/2 ;
-		tstEndVAs[i] = va + actualSize - sizeof(short);
-
-		//Check block
-		cprintf("test#%d\n",i);
-		expectedVA = (void*)expectedVAs[i];
-		if (check_block(va, expectedVA, testSizes[i], 1) == 0)
-		{
-			is_correct = 0;
-		}
-		*(tstStartVAs[i]) = 353;
-		*(tstMidVAs[i]) = 353;
-		*(tstEndVAs[i]) = 353;
-	}
-
-	if (is_correct) is_correct = check_list_size(numOfAllocs);
-	if (is_correct)
-	{
-		eval += 15;
-	}
-	//====================================================================//
-	/*BF ALLOC Scenario 3: Try to allocate a block with a size equal to the size of an existing free block*/
-	cprintf("	3: Try to allocate a block with equal to an existing free block\n\n") ;
-	is_correct = 1;
-
-	actualSize = kilo/4 - sizeOfMetaData;
-	va = tstStartVAs[numOfBFTests] = alloc_block(actualSize, DA_BF);
-	tstMidVAs[numOfBFTests] = va + actualSize/2 ;
-	tstEndVAs[numOfBFTests] = va + actualSize - sizeof(short);
-	//Check returned va
-	expectedVA = (void*)(startOf1st2KB + testSizes[1] + testSizes[3]) ;
-	if (is_correct) is_correct = check_block(va, expectedVA, kilo/4, 1);
-	if (is_correct) is_correct = check_list_size(numOfAllocs-1);
-
-	*(tstStartVAs[numOfBFTests]) = 353 ;
-	*(tstMidVAs[numOfBFTests]) = 353 ;
-	*(tstEndVAs[numOfBFTests]) = 353 ;
-
-	if (is_correct)
-	{
-		eval += 10;
-	}
-	//====================================================================//
-	/*FF ALLOC Scenario 4: Try to allocate a block with a bit smaller size [internal fragmentation case]*/
-	cprintf("	4: Try to allocate a block with a bit smaller size [internal fragmentation case]\n\n") ;
-	is_correct = 1;
-
-	actualSize = allocSizes[5] - sizeOfMetaData - 2;
-	va = tstStartVAs[numOfBFTests+1] = alloc_block(actualSize, DA_BF);
-	tstMidVAs[numOfBFTests+1] = va + 2 ;
-	tstEndVAs[numOfBFTests+1] = va + actualSize - sizeof(short);
-	//Check block
-	expectedVA = startVAs[5*allocCntPerSize];
-
-	if (is_correct) is_correct = check_block(va, expectedVA, allocSizes[5], 1);
-	if (is_correct) is_correct = check_list_size(numOfAllocs - 2);
-
-	*(tstStartVAs[numOfBFTests+1]) = 353 ;
-	*(tstMidVAs[numOfBFTests+1]) = 353 ;
-	*(tstEndVAs[numOfBFTests+1]) = 353 ;
-
-	if (is_correct)
-	{
-		eval += 10;
-	}
-	//====================================================================//
-	/*BF ALLOC Scenario 5: Check stored data inside each allocated block*/
-	cprintf("	5: Check stored data inside each allocated block\n\n") ;
-	is_correct = 1;
-
-	for (int i = 0; i < numOfBFTests+2; ++i)
-	{
-		//cprintf("startVA = %x, mid = %x, last = %x\n", tstStartVAs[i], tstMidVAs[i], tstEndVAs[i]);
-		if (*(tstStartVAs[i]) != 353 || *(tstMidVAs[i]) != 353 || *(tstEndVAs[i]) != 353)
-		{
-			//cprintf("start VA = %x, mid VA = %x, end VA = %x\n", tstStartVAs[i], tstMidVAs[i], tstEndVAs[i]);
-			is_correct = 0;
-			cprintf("alloc_block_BF #8.%d: WRONG! content of the block is not correct. Expected=%d, val1=%d, val2=%d, val3=%d\n",i, 353, *(tstStartVAs[i]), *(tstMidVAs[i]), *(tstEndVAs[i]));
-			break;
-		}
-	}
-
-	if (is_correct)
-	{
-		eval += 10;
-	}
-	cprintf("test alloc_block_BF completed. Evaluation = %d%\n", eval);
-}
-
-void test_alloc_block_NF()
-{
-
-	//====================================================================//
-	/*NF ALLOC Scenario 1: Try to allocate a block with a size greater than the size of any existing free block*/
-
-	//====================================================================//
-	/*NF ALLOC Scenario 2: Try to allocate a block with a size equal to the size of the one existing free blocks (STARTING from 0)*/
-
-	//====================================================================//
-	/*NF ALLOC Scenario 3: Try to allocate a block with a size equal to the size of the one existing free blocks (The first one fit after the last allocated VA)*/
-
-	//====================================================================//
-	/*NF ALLOC Scenario 4: Try to allocate a block with a size smaller than the size of any existing free block (The first one fit after the last allocated VA)*/
-
-	//====================================================================//
-	/*NF ALLOC Scenario 5: Try to allocate a block with a size smaller than the size of any existing free block (One from the updated blocks before in the free list)*/
-
-	//====================================================================//
-	/*NF ALLOC Scenario 6: Try to allocate a block with a size smaller than ALL the NEXT existing blocks .. Shall start search from the start of the list*/
-
-	//====================================================================//
-	/*NF ALLOC Scenario 7: Try to allocate a block with a size smaller than the existing blocks .. To try to update head not to remove it*/
-
-	//cprintf("Congratulations!! test alloc_block_NF completed successfully.\n");
-
-}
-
-void test_free_block_FF()
-{
-
 #if USE_KHEAP
 	panic("test_free_block: the kernel heap should be disabled. make sure USE_KHEAP = 0");
 	return;
 #endif
 
-	cprintf("===========================================================\n") ;
-	cprintf("NOTE: THIS TEST IS DEPEND ON BOTH ALLOCATE & FREE FUNCTIONS\n") ;
-	cprintf("===========================================================\n") ;
+	cprintf_colored(TEXT_light_cyan, "===========================================================\n") ;
+	cprintf_colored(TEXT_light_cyan, "NOTE: THIS TEST IS DEPEND ON BOTH ALLOCATE & FREE FUNCTIONS\n") ;
+	cprintf_colored(TEXT_light_cyan, "===========================================================\n") ;
+
+	cprintf_colored(TEXT_yellow, "==============================================\n");
+	cprintf_colored(TEXT_yellow, "MAKE SURE to have a FRESH RUN for this test\n(i.e. don't run ANYTHING before or after it)\n");
+	cprintf_colored(TEXT_yellow, "==============================================\n");
+
 	void*expected_va ;
 
+	//Remove the current 1-to-1 mapping of the KERNEL HEAP area since the USE_KHEAP = 0 for this test
+	uint32 startDA = KERNEL_HEAP_START ;
+	uint32 sizeDA = 0x2AE000 ;
+	uint32 endDA = KERNEL_HEAP_START + sizeDA ;
+	remove_current_mappings(startDA, endDA);
+	initialize_dynamic_allocator(startDA, endDA);
+
 	int eval = 0;
-	bool is_correct;
-	int initAllocatedSpace = 3*Mega;
-	initialize_dynamic_allocator(KERNEL_HEAP_START, initAllocatedSpace);
+	bool is_correct = 1;
 
-	void * va ;
+	int initialFreeFrames = sys_calculate_free_frames();
+	void *va ;
 	//====================================================================//
-	/* Try to allocate set of blocks with different sizes*/
-	cprintf("	1: Try to allocate set of blocks with different sizes to fill-up the allocated space\n\n") ;
-
-	int totalSizes = 0;
-	for (int i = 0; i < numOfAllocs; ++i)
+	/*INITIAL ALLOCATION: Allocate set of blocks for each possible block size (consume entire space)*/
+	cprintf_colored(TEXT_cyan, "\n1: Allocate set of blocks for each possible block size (consume entire space)\n\n") ;
+	int curSize = 1<<LOG2_MIN_SIZE ;
+	int numOfBlksAtCurSize = 0;
+	int maxNumOfBlksAtCurPage = PAGE_SIZE / curSize;
+	uint32 expectedVA = KERNEL_HEAP_START;
+	for (int s = 1; s <= DYN_ALLOC_MAX_BLOCK_SIZE; ++s)
 	{
-		totalSizes += allocSizes[i] * allocCntPerSize ;
-	}
-	int remainSize = initAllocatedSpace - totalSizes - 2*sizeof(int) ; //exclude size of "DA Begin & End" blocks
-	if (remainSize <= 0)
-		panic("test_free_block is not configured correctly. Consider updating the initial allocated space OR the required allocations");
+		va = alloc_block(s);
+		startVAsInit[s] = va; *startVAsInit[s] = s ;
+		endVAsInit[s] = va + curSize - sizeof(short); *endVAsInit[s] = s ;
 
-	int idx = 0;
-	void* curVA = (void*) KERNEL_HEAP_START + sizeof(int) ; //just after the "DA Begin" block
-	uint32 actualSize;
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		for (int j = 0; j < allocCntPerSize; ++j)
+		numOfBlksAtCurSize++;
+		if (is_correct && ROUNDDOWN((uint32)va, PAGE_SIZE) != expectedVA)
 		{
-			actualSize = allocSizes[i] - sizeOfMetaData;
-			va = startVAs[idx] = alloc_block(actualSize, DA_FF);
-			midVAs[idx] = va + actualSize/2 ;
-			endVAs[idx] = va + actualSize - sizeof(short);
-			//Check returned va
-			expected_va = curVA + sizeOfMetaData/2;
-			if (check_block(va, expected_va, allocSizes[i], 1) == 0)
-				//			if(va != (curVA + sizeOfMetaData/2))
-				panic("test_free_block #1.%d: WRONG ALLOC - alloc_block_FF return wrong address. Expected %x, Actual %x", idx, expected_va ,va);
-			curVA += allocSizes[i] ;
-			*(startVAs[idx]) = idx ;
-			*(midVAs[idx]) = idx ;
-			*(endVAs[idx]) = idx ;
-			idx++;
+			panic("free_block test#1.%d: WRONG! VA is not correct. Expected VA = %x, Actual VA = %x\n", s, expectedVA, va);
+		}
+		if (s == curSize)
+		{
+			if (check_dynalloc_datastruct(curSize, numOfBlksAtCurSize) == 0)
+			{
+				panic("free_block test#2.%d: WRONG! DA data structures are not correct\n", s);
+			}
+			//Reinitialize
+			{
+				curSize <<= 1;
+				expectedVA += PAGE_SIZE;
+				numOfBlksAtCurSize = 0;
+				maxNumOfBlksAtCurPage = PAGE_SIZE / curSize;
+			}
+		}
+		else if (numOfBlksAtCurSize % maxNumOfBlksAtCurPage == 0)
+		{
+			expectedVA += PAGE_SIZE;
 		}
 	}
 
 	//====================================================================//
-	/* Try to allocate a block with a size equal to the size of the first existing free block*/
-	actualSize = remainSize - sizeOfMetaData;
-	va = startVAs[idx] = alloc_block(actualSize, DA_FF);
-	midVAs[idx] = va + actualSize/2 ;
-	endVAs[idx] = va + actualSize - sizeof(short);
-	//Check returned va
-	expected_va = curVA + sizeOfMetaData/2;
-	if (check_block(va, expected_va, remainSize, 1) == 0)
-		//			if(va != (curVA + sizeOfMetaData/2))
-		panic("test_free_block #2: WRONG ALLOC - alloc_block_FF return wrong address. Expected %x, Actual %x",  expected_va ,va);
-	*(startVAs[idx]) = idx ;
-	*(midVAs[idx]) = idx ;
-	*(endVAs[idx]) = idx ;
-
-	//====================================================================//
-	/* Check stored data inside each allocated block*/
-	cprintf("	2: Check stored data inside each allocated block\n\n") ;
-	is_correct = 1;
-
-	for (int i = 0; i < idx; ++i)
+	/*FREE: Remove all blocks (except 1) for each possible block size that consume at most 1 page (Page will nor be freed)*/
+	cprintf_colored(TEXT_cyan, "\n2: Remove all blocks (except 1) for each block size that consume 1 page [30%]"
+			"(Page will not be freed)\n\n") ;
+	//calculate expected number of allocated & free blocks at all levels
+	int size1 = 0;
+	int size2 = DYN_ALLOC_MIN_BLOCK_SIZE;
+	int numOfRemFreeBlks[numOfLevels];
+	int numOfAllocBlks[numOfLevels];
+	uint32 expectedPageIndex[numOfLevels];
+	uint32 prevAllocPages = 0;
+	int idx = 0;
+	while (size1 < DYN_ALLOC_MAX_BLOCK_SIZE)
 	{
-		if (*(startVAs[i]) != i || *(midVAs[i]) != i ||	*(endVAs[i]) != i)
+		numOfAllocBlks[idx] = size2 - size1;
+		int expectedNumOfBlksPerPage = PAGE_SIZE / size2;
+		if (numOfAllocBlks[idx] % expectedNumOfBlksPerPage != 0)
+		{
+			numOfRemFreeBlks[idx] = expectedNumOfBlksPerPage - (numOfAllocBlks[idx] % expectedNumOfBlksPerPage) ;
+			expectedPageIndex[idx] = (prevAllocPages + numOfAllocBlks[idx] / expectedNumOfBlksPerPage) ;
+			prevAllocPages += numOfAllocBlks[idx] / expectedNumOfBlksPerPage + 1;
+		}
+		else
+		{
+			numOfRemFreeBlks[idx] = 0;
+			expectedPageIndex[idx] = 0;
+			prevAllocPages += numOfAllocBlks[idx] / expectedNumOfBlksPerPage;
+		}
+		size1 = size2 ;
+		size2 *= 2 ;
+		idx++;
+	}
+
+	//At each level that consume ONLY 1 page, free all its blocks (except 1)
+	curSize = 1<<LOG2_MIN_SIZE ;
+	maxNumOfBlksAtCurPage = PAGE_SIZE / curSize;
+	idx = 0;
+	int freeFramesAfter = 0, freeFramesBefore = sys_calculate_free_frames();
+	int nextSize = 0;
+	int nextIdx = 0;
+	is_correct = 1;
+	for (int s = 1; s <= DYN_ALLOC_MAX_BLOCK_SIZE; ++s)
+	{
+		//Skip removing the last block at the current size
+		if (s == curSize)
+		{
+			if (is_correct) eval += 5;
+			is_correct = 1;
+			//Check the entire data structures
+			if (check_dynalloc_datastruct(curSize, numOfAllocBlks[idx]) == 0)
+			{
+				is_correct = 0;
+				cprintf_colored(TEXT_TESTERR_CLR,"free_block test#4.%d: WRONG! DA data structures are not correct\n", s);
+			}
+			if (is_correct) eval += 5;
+			is_correct = 1;
+			//Reinitialize
+			{
+				curSize <<= 1;
+				idx++ ;
+				maxNumOfBlksAtCurPage = PAGE_SIZE / curSize;
+			}
+			//Stop the loop if the # allocation at current size exceed one page
+			if (numOfAllocBlks[idx] / maxNumOfBlksAtCurPage > 0)
+			{
+				nextSize = curSize;
+				nextIdx = idx ;
+				break;
+			}
+			else
+			{
+				continue;
+			}
+		}
+
+		free_block(startVAsInit[s]);
+
+		numOfAllocBlks[idx]--;
+
+		freeFramesAfter = sys_calculate_free_frames();
+		//Check # free frames (should not be changed)
+		if (is_correct && freeFramesAfter != freeFramesBefore)
 		{
 			is_correct = 0;
-			cprintf("test_free_block #3.%d: WRONG! content of the block is not correct. Expected %d\n",i, i);
+			cprintf_colored(TEXT_TESTERR_CLR, "free_block test#3.%d: WRONG! number of allocated frames is not as expected. Actual: %d, Expected: %d\n",s, freeFramesBefore - freeFramesAfter , 0);
+		}
+	}
+
+	//====================================================================//
+	/*FREE: Remove remaining block in each block size that consume at most 1 page (Page should be freed)*/
+	cprintf_colored(TEXT_cyan, "\n3: Remove remaining block in each block size that consume at most 1 page  [30%]"
+			"(Page should be freed)\n") ;
+	//At each level that consume ONLY 1 page, free its remaining block
+	curSize = 1<<LOG2_MIN_SIZE ;
+	idx = 0;
+	while (curSize < nextSize)
+	{
+		//Check content of the block before removing it
+		is_correct = 1;
+		if (*startVAsInit[curSize] != curSize || *endVAsInit[curSize] != curSize)
+		{
+			is_correct = 0;
+			cprintf_colored(TEXT_TESTERR_CLR, "free_block test#4.%d: WRONG! block content is changed while it's not expected to.", curSize);
+		}
+		//free the remaining block at the current size
+		freeFramesBefore = sys_calculate_free_frames();
+		{
+			free_block(startVAsInit[curSize]);
+
+			numOfAllocBlks[idx]--;
+
+			assert(numOfAllocBlks[idx] == 0);
+		}
+
+		//Check # free frames (should be increased by 1)
+		freeFramesAfter = sys_calculate_free_frames();
+		if (freeFramesAfter - freeFramesBefore != 1)
+		{
+			is_correct = 0;
+			cprintf_colored(TEXT_TESTERR_CLR, "free_block test#5.%d: WRONG! number of free frames is not as expected. Actual: %d, Expected: %d\n",curSize, freeFramesAfter - freeFramesBefore, 1);
+		}
+		if (is_correct) eval += 5;
+		//Check the entire data structures
+		is_correct = 1;
+		if (check_dynalloc_datastruct(curSize, numOfBlksAtCurSize) == 0)
+		{
+			is_correct = 0;
+			cprintf_colored(TEXT_TESTERR_CLR,"free_block test#5.%d: WRONG! DA data structures are not correct\n", curSize);
+		}
+		if (is_correct) eval += 5;
+		is_correct = 1;
+
+		//Move to next block size
+		{
+			curSize <<= 1;
+			idx++ ;
+		}
+	}
+	//rescale to 60% instead of 80%
+	eval = eval * 60 / 80;
+
+
+	//====================================================================//
+	/*FREE: Remove all blocks for each of the remaining block sizes*/
+	cprintf_colored(TEXT_cyan, "\n4: Remove all blocks for each of the remaining block sizes  [20%]\n") ;
+	curSize = nextSize ;
+	int startSize = (nextSize>>1) + 1;
+	idx = nextIdx;
+	is_correct = 1;
+	for (int s = startSize; s <= DYN_ALLOC_MAX_BLOCK_SIZE; ++s)
+	{
+		free_block(startVAsInit[s]);
+
+		numOfAllocBlks[idx]--;
+
+		//Skip removing the last block at the current size
+		if (s == curSize)
+		{
+			assert(numOfAllocBlks[idx] == 0);
+
+			//Check the entire data structures
+			if (check_dynalloc_datastruct(curSize, numOfAllocBlks[idx]) == 0)
+			{
+				is_correct = 0;
+				cprintf_colored(TEXT_TESTERR_CLR,"free_block test#6.%d: WRONG! DA data structures are not correct\n", s);
+				break;
+			}
+			//Reinitialize
+			{
+				curSize <<= 1;
+				idx++ ;
+			}
+		}
+
+	}
+
+	//Check # free frames (should be returned to the original number (no tables are allocated in the DA range ))
+	freeFramesAfter = sys_calculate_free_frames();
+	if (freeFramesAfter != initialFreeFrames)
+	{
+		is_correct = 0;
+		cprintf_colored(TEXT_TESTERR_CLR, "free_block test#7: WRONG! number of free frames is not returned to the original. Actual: %d, Original: %d\n",freeFramesAfter , initialFreeFrames);
+	}
+	if (is_correct) eval += 20;
+
+
+	//====================================================================//
+	/*ALLOCATE: Reallocate all pages using max block size (consume entire space)*/
+	cprintf_colored(TEXT_cyan, "\n5: Reallocate all pages using max block size (consume entire space)  [20%]\n") ;
+	curSize = DYN_ALLOC_MAX_BLOCK_SIZE ;
+	numOfBlksAtCurSize = sizeDA / DYN_ALLOC_MAX_BLOCK_SIZE;
+	is_correct = 1;
+	for (int i = 1; i <= numOfBlksAtCurSize; ++i)
+	{
+		va = alloc_block(curSize);
+		startVAsInit[i] = va; *startVAsInit[i] = i ;
+		endVAsInit[i] = va + curSize - sizeof(short); *endVAsInit[i] = i ;
+		if (check_dynalloc_datastruct(curSize, i) == 0)
+		{
+			is_correct = 0;
+			cprintf_colored(TEXT_TESTERR_CLR, "free_block test#8.%d: WRONG! DA data structures are not correct\n", i);
 			break;
 		}
 	}
-
-	//====================================================================//
-	/* free_block Scenario 1: Free some allocated blocks [no coalesce]*/
-	cprintf("	3: Free some allocated block [no coalesce]\n\n") ;
-	uint32 block_size, block_status, expected_size, *blk_header, *blk_footer;
-	is_correct = 1;
-
-	//Free set of blocks with different sizes (first block of each size)
-	for (int i = 0; i < numOfAllocs; ++i)
+	//check content
+	for (int i = 1; i <= numOfBlksAtCurSize; ++i)
 	{
-		cprintf("test#%d\n",i);
-		free_block(startVAs[i*allocCntPerSize]);
-		if (check_block(startVAs[i*allocCntPerSize], startVAs[i*allocCntPerSize], allocSizes[i], 0) == 0)
+		if (*startVAsInit[i] != i || *endVAsInit[i] != i)
 		{
 			is_correct = 0;
+			cprintf_colored(TEXT_TESTERR_CLR, "free_block test#9.%d: WRONG! block content is changed while it's not expected to.", i);
+			break;
 		}
 	}
-	uint32 expectedNumOfFreeBlks = numOfAllocs;
-	if (is_correct) is_correct = check_list_size(expectedNumOfFreeBlks);
-	if (is_correct)
-	{
-		eval += 10;
-	}
+	if (is_correct) eval += 20;
 
-	is_correct = 1;
-	//Free last block
-	free_block(startVAs[numOfAllocs*allocCntPerSize]);
-	if (is_correct) is_correct = check_block(startVAs[numOfAllocs*allocCntPerSize], startVAs[numOfAllocs*allocCntPerSize], remainSize, 0);
-
-	//Reallocate last block
-	actualSize = remainSize - sizeOfMetaData;
-	va = alloc_block(actualSize, DA_FF);
-	//Check block
-	expected_va = (curVA + sizeOfMetaData/2);
-	if (is_correct) is_correct = check_block(va, expected_va, remainSize, 1);
-
-	//Free block before last
-	free_block(startVAs[numOfAllocs*allocCntPerSize - 1]);
-	if (is_correct) is_correct = check_block(startVAs[numOfAllocs*allocCntPerSize-1], startVAs[numOfAllocs*allocCntPerSize-1], allocSizes[numOfAllocs-1], 0);
-
-	//Reallocate first block
-	actualSize = allocSizes[0] - sizeOfMetaData;
-	va = alloc_block(actualSize, DA_FF);
-	//Check returned va
-	expected_va = (void*)(KERNEL_HEAP_START + sizeof(int) + sizeOfMetaData/2);
-	if (is_correct) is_correct = check_block(va, expected_va, allocSizes[0], 1);
-
-	//Free 2nd block
-	free_block(startVAs[1]);
-	if (is_correct) is_correct = check_block(startVAs[1], startVAs[1], allocSizes[0], 0);
-
-	expectedNumOfFreeBlks++ ;
-	if (is_correct) is_correct = check_list_size(expectedNumOfFreeBlks);
-	if (is_correct)
-	{
-		eval += 10;
-	}
-
-	//====================================================================//
-	/*free_block Scenario 2: Merge with previous ONLY (AT the tail)*/
-	cprintf("	4: Free some allocated blocks [Merge with previous ONLY]\n\n") ;
-	cprintf("		4.1: at the tail\n\n") ;
-	is_correct = 1;
-	//Free last block (coalesce with previous)
-	uint32 blockIndex = numOfAllocs*allocCntPerSize;
-	free_block(startVAs[blockIndex]);
-	expected_size = remainSize + allocSizes[numOfAllocs-1];
-	if (check_block(startVAs[blockIndex-1], startVAs[blockIndex-1], expected_size, 0) == 0)
-	{
-		is_correct = 0;
-	}
-	//====================================================================//
-	/*free_block Scenario 3: Merge with previous ONLY (between 2 blocks)*/
-	cprintf("		4.2: between 2 blocks\n\n") ;
-	blockIndex = 2*allocCntPerSize+1 ;
-	free_block(startVAs[blockIndex]);
-	expected_size = allocSizes[2]+allocSizes[2];
-	if (check_block(startVAs[blockIndex-1], startVAs[blockIndex-1], expected_size, 0) == 0)
-	{
-		is_correct = 0;
-	}
-	if (check_list_size(expectedNumOfFreeBlks) == 0)
-	{
-		is_correct = 0;
-	}
-	if (is_correct)
-	{
-		eval += 15;
-	}
-
-	//====================================================================//
-	/*free_block Scenario 4: Merge with next ONLY (AT the head)*/
-	cprintf("	5: Free some allocated blocks [Merge with next ONLY]\n\n") ;
-	cprintf("		5.1: at the head\n\n") ;
-	is_correct = 1;
-	blockIndex = 0 ;
-	free_block(startVAs[blockIndex]);
-	expected_size = allocSizes[0]+allocSizes[0];
-	if (check_block(startVAs[blockIndex], startVAs[blockIndex], expected_size, 0) == 0)
-	{
-		is_correct = 0;
-	}
-
-	//====================================================================//
-	/*free_block Scenario 5: Merge with next ONLY (between 2 blocks)*/
-	cprintf("		5.2: between 2 blocks\n\n") ;
-	blockIndex = 1*allocCntPerSize - 1 ;
-	free_block(startVAs[blockIndex]);
-	block_size = get_block_size(startVAs[blockIndex]) ;
-	expected_size = allocSizes[0]+allocSizes[1];
-	if (check_block(startVAs[blockIndex], startVAs[blockIndex], expected_size, 0) == 0)
-	{
-		is_correct = 0;
-	}
-
-	if (is_correct) is_correct = check_list_size(expectedNumOfFreeBlks);
-	if (is_correct)
-	{
-		eval += 15;
-	}
-
-	//====================================================================//
-	/*free_block Scenario 6: Merge with prev & next */
-	cprintf("	6: Free some allocated blocks [Merge with previous & next]\n\n") ;
-	is_correct = 1;
-	blockIndex = 4*allocCntPerSize - 2 ;
-	free_block(startVAs[blockIndex]);	//no merge
-	expectedNumOfFreeBlks++;
-
-	blockIndex = 4*allocCntPerSize - 1 ;
-	free_block(startVAs[blockIndex]);	//merge with prev & next
-	expectedNumOfFreeBlks--;
-
-	block_size = get_block_size(startVAs[blockIndex-1]) ;
-	expected_size = allocSizes[3]+allocSizes[3]+allocSizes[4];
-	if (check_block(startVAs[blockIndex-1], startVAs[blockIndex-1], expected_size, 0) == 0)
-	{
-		is_correct = 0;
-	}
-
-	if (is_correct) is_correct = check_list_size(expectedNumOfFreeBlks);
-
-	if (is_correct)
-	{
-		eval += 20;
-	}
-
-	//====================================================================//
-	/*Allocate After Free Scenarios */
-	cprintf("	7: Allocate After Free [should be placed in coalesced blocks]\n\n") ;
-
-	cprintf("		7.1: in block coalesces with NEXT\n\n") ;
-	is_correct = 1;
-	actualSize = 5*kilo - sizeOfMetaData;
-	expected_size = ROUNDUP(actualSize + sizeOfMetaData, 2);
-	va = alloc_block(actualSize, DA_FF);
-	//Check returned va
-	void* expected = (void*)(KERNEL_HEAP_START + sizeof(int) + sizeOfMetaData/2);
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		is_correct = 0;
-		cprintf("test_free_block #7.1: Failed\n");
-	}
-	actualSize = 3*kilo - sizeOfMetaData;
-	expected_size = ROUNDUP(actualSize + sizeOfMetaData, 2);
-	va = alloc_block(actualSize, DA_FF);
-	//Check returned va
-	expected = (void*)(KERNEL_HEAP_START + sizeof(int) + 5*kilo + sizeOfMetaData/2);
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		is_correct = 0;
-		cprintf("test_free_block #7.2: Failed\n");
-	}
-
-	expectedNumOfFreeBlks--;
-
-	/*INTERNAL FRAGMENTATION CASE*/
-	actualSize = 4*kilo + 10 ;
-	expected_size = MAX(ROUNDUP(actualSize + sizeOfMetaData, 2), allocSizes[0]+allocSizes[1]) ;
-	va = alloc_block(actualSize, DA_FF);
-	//Check returned va
-	expected = startVAs[1*allocCntPerSize - 1];
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		is_correct = 0;
-		cprintf("test_free_block #7.3: Failed INTERNAL FRAGMENTATION CASE\n");
-	}
-	if (is_correct)
-	{
-		eval += 10;
-	}
-
-	expectedNumOfFreeBlks--;
-
-	cprintf("		7.2: in block coalesces with PREV & NEXT\n\n") ;
-	is_correct = 1;
-	actualSize = 2*kilo + 1;
-	expected_size = ROUNDUP(actualSize + sizeOfMetaData, 2);
-	va = alloc_block(actualSize, DA_FF);
-	//Check returned va
-	expected = startVAs[4*allocCntPerSize - 2];
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		is_correct = 0;
-		cprintf("test_free_block #7.4: Failed\n");
-	}
-	if (is_correct)
-	{
-		eval += 10;
-	}
-
-	cprintf("		7.3: in block coalesces with PREV\n\n") ;
-	is_correct = 1;
-	actualSize = 2*kilo - sizeOfMetaData;
-	expected_size = ROUNDUP(actualSize + sizeOfMetaData, 2);
-	va = alloc_block(actualSize, DA_FF);
-	//Check returned va
-	expected = startVAs[2*allocCntPerSize];
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		is_correct = 0;
-		cprintf("test_free_block #7.5: Failed\n");
-	}
-
-	expectedNumOfFreeBlks--;
-
-	actualSize = 8*kilo - sizeOfMetaData;
-	expected_size = ROUNDUP(actualSize + sizeOfMetaData, 2);
-	va = alloc_block(actualSize, DA_FF);
-	//Check returned va
-	expected = startVAs[numOfAllocs*allocCntPerSize-1];
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		is_correct = 0;
-		cprintf("test_free_block #7.6: Failed\n");
-	}
-
-	if (is_correct) is_correct = check_list_size(expectedNumOfFreeBlks);
-
-	if (is_correct)
-	{
-		eval += 10;
-	}
-
-	cprintf("test free_block with FIRST FIT completed. Evaluation = %d%\n", eval);
+	cprintf_colored(TEXT_light_green, "test free_block completed. Evaluation = %d%\n", eval);
 
 }
 
-void test_free_block_BF()
+void test_realloc_block()
 {
+	panic("unseen test");
+
 #if USE_KHEAP
-	panic("test_free_block: the kernel heap should be disabled. make sure USE_KHEAP = 0");
+	panic("test_realloc_block_COMPLETE: the kernel heap should be disabled. make sure USE_KHEAP = 0");
 	return;
 #endif
-
-	cprintf("===========================================================\n") ;
-	cprintf("NOTE: THIS TEST IS DEPEND ON BOTH ALLOCATE & FREE FUNCTIONS\n") ;
-	cprintf("===========================================================\n") ;
-
-	int initAllocatedSpace = 3*Mega;
-	initialize_dynamic_allocator(KERNEL_HEAP_START, initAllocatedSpace);
-
-	void * va ;
-	//====================================================================//
-	/* Try to allocate set of blocks with different sizes*/
-	cprintf("	1: Try to allocate set of blocks with different sizes to fill-up the allocated space\n\n") ;
-
-	int totalSizes = 0;
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		totalSizes += allocSizes[i] * allocCntPerSize ;
-	}
-	int remainSize = initAllocatedSpace - totalSizes - 2*sizeof(int) ; //exclude size of "DA Begin & End" blocks
-	if (remainSize <= 0)
-		panic("test_free_block is not configured correctly. Consider updating the initial allocated space OR the required allocations");
-
-	int idx = 0;
-	void* curVA = (void*) KERNEL_HEAP_START + sizeof(int) ; //just after the "DA Begin" block
-
-	uint32 actualSize, expected_size;
-	void* expected_va;
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		for (int j = 0; j < allocCntPerSize; ++j)
-		{
-			actualSize = allocSizes[i] - sizeOfMetaData;
-			va = startVAs[idx] = alloc_block(actualSize, DA_BF);
-			midVAs[idx] = va + actualSize/2 ;
-			endVAs[idx] = va + actualSize - sizeof(short);
-			//Check returned va
-			expected_va = curVA + sizeOfMetaData/2;
-			if (check_block(va, expected_va, allocSizes[i], 1) == 0)
-				panic("test_free_block #1.%d: WRONG ALLOC - alloc_block_BF return wrong address. Expected %x, Actual %x", idx, curVA + sizeOfMetaData ,va);
-			curVA += allocSizes[i] ;
-			*(startVAs[idx]) = idx ;
-			*(midVAs[idx]) = idx ;
-			*(endVAs[idx]) = idx ;
-			idx++;
-		}
-	}
-
-	//====================================================================//
-	/* Try to allocate a block with a size equal to the size of the first existing free block*/
-	actualSize = remainSize - sizeOfMetaData;
-	va = startVAs[idx] = alloc_block(actualSize, DA_BF);
-	midVAs[idx] = va + actualSize/2 ;
-	endVAs[idx] = va + actualSize - sizeof(short);
-	//Check returned va
-	expected_va = curVA + sizeOfMetaData/2;
-	if (check_block(va, expected_va, remainSize, 1) == 0)
-		panic("test_free_block #1: WRONG ALLOC - alloc_block_BF return wrong address.");
-	*(startVAs[idx]) = idx ;
-	*(midVAs[idx]) = idx ;
-	*(endVAs[idx]) = idx ;
-
-	//====================================================================//
-	/* Check stored data inside each allocated block*/
-	cprintf("	2: Check stored data inside each allocated block\n\n") ;
-
-	for (int i = 0; i < idx; ++i)
-	{
-		if (*(startVAs[i]) != i || *(midVAs[i]) != i ||	*(endVAs[i]) != i)
-			panic("test_free_block #2.%d: WRONG! content of the block is not correct. Expected %d",i, i);
-	}
-
-	//====================================================================//
-	/* free_block Scenario 1: Free some allocated blocks [no coalesce]*/
-	cprintf("	3: Free some allocated block [no coalesce]\n\n") ;
-
-	//Free set of blocks with different sizes (first block of each size)
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		free_block(startVAs[i*allocCntPerSize]);
-		if (check_block(startVAs[i*allocCntPerSize], startVAs[i*allocCntPerSize], allocSizes[i], 0) == 0)
-		{
-			panic("3.1 Failed");
-		}
-	}
-	uint32 expectedNumOfFreeBlks = numOfAllocs;
-	if (check_list_size(expectedNumOfFreeBlks) == 0)
-	{
-		panic("3.2 Failed");
-	}
-
-	//Free last block
-	free_block(startVAs[numOfAllocs*allocCntPerSize]);
-	if (check_block(startVAs[numOfAllocs*allocCntPerSize], startVAs[numOfAllocs*allocCntPerSize], remainSize, 0) == 0)
-		panic("3.3 Failed");
-
-	//Reallocate last block
-	actualSize = remainSize - sizeOfMetaData;
-	va = alloc_block(actualSize, DA_BF);
-	//Check returned va
-	expected_va = (curVA + sizeOfMetaData/2);
-	if(check_block(va, expected_va, remainSize, 1) == 0)
-		panic("3.4 Failed");
-
-	//Free block before last
-	free_block(startVAs[numOfAllocs*allocCntPerSize - 1]);
-	if (check_block(startVAs[numOfAllocs*allocCntPerSize-1], startVAs[numOfAllocs*allocCntPerSize-1], allocSizes[numOfAllocs-1], 0) == 0)
-		panic("3.5 Failed");
-
-	//Reallocate first block
-	actualSize = allocSizes[0] - sizeOfMetaData;
-	va = alloc_block(actualSize, DA_BF);
-	//Check returned va
-	expected_va = (void*)(KERNEL_HEAP_START + 2*sizeof(int));
-	if(check_block(va, expected_va, allocSizes[0], 1) == 0)
-		panic("3.6 Failed");
-
-	//Free 2nd block
-	free_block(startVAs[1]);
-	if (check_block(startVAs[1], startVAs[1], allocSizes[0], 0) == 0)
-		panic("3.7 Failed");
-
-	expectedNumOfFreeBlks++ ;
-	if (check_list_size(expectedNumOfFreeBlks) == 0)
-	{
-		panic("3.8 Failed");
-	}
-
-	uint32 block_size, block_status;
-	//====================================================================//
-	/*free_block Scenario 2: Merge with previous ONLY (AT the tail)*/
-	cprintf("	4: Free some allocated blocks [Merge with previous ONLY]\n\n") ;
-	cprintf("		4.1: at the tail\n\n") ;
-	//Free last block (coalesce with previous)
-	uint32 blockIndex = numOfAllocs*allocCntPerSize;
-	free_block(startVAs[blockIndex]);
-	expected_size = remainSize + allocSizes[numOfAllocs-1];
-	if (check_block(startVAs[blockIndex-1], startVAs[blockIndex-1], expected_size, 0) == 0)
-	{
-		panic("4.1 Failed");
-	}
-	//====================================================================//
-	/*free_block Scenario 3: Merge with previous ONLY (between 2 blocks)*/
-	cprintf("		4.2: between 2 blocks\n\n") ;
-	blockIndex = 2*allocCntPerSize+1 ;
-	free_block(startVAs[blockIndex]);
-	expected_size = allocSizes[2]+allocSizes[2];
-	if (check_block(startVAs[blockIndex-1], startVAs[blockIndex-1], expected_size, 0) == 0)
-	{
-		panic("4.2 Failed");
-	}
-	//====================================================================//
-	/*free_block Scenario 4: Merge with next ONLY (AT the head)*/
-	cprintf("	5: Free some allocated blocks [Merge with next ONLY]\n\n") ;
-	cprintf("		5.1: at the head\n\n") ;
-	blockIndex = 0 ;
-	free_block(startVAs[blockIndex]);
-	expected_size = allocSizes[0]+allocSizes[0];
-	if (check_block(startVAs[blockIndex], startVAs[blockIndex], expected_size, 0) == 0)
-	{
-		panic("5.1 Failed");
-	}
-	//====================================================================//
-	/*free_block Scenario 5: Merge with next ONLY (between 2 blocks)*/
-	cprintf("		5.2: between 2 blocks\n\n") ;
-	blockIndex = 1*allocCntPerSize - 1 ;
-	free_block(startVAs[blockIndex]);
-	expected_size = allocSizes[0]+allocSizes[1];
-	if (check_block(startVAs[blockIndex], startVAs[blockIndex], expected_size, 0) == 0)
-	{
-		panic("5.2 Failed");
-	}
-	//====================================================================//
-	/*free_block Scenario 6: Merge with prev & next */
-	cprintf("	6: Free some allocated blocks [Merge with previous & next]\n\n") ;
-	blockIndex = 4*allocCntPerSize - 2 ;
-	free_block(startVAs[blockIndex]);
-
-	blockIndex = 4*allocCntPerSize - 1 ;
-	free_block(startVAs[blockIndex]);
-	expected_size = allocSizes[3]+allocSizes[3]+allocSizes[4];
-	if (check_block(startVAs[blockIndex-1], startVAs[blockIndex-1], expected_size, 0) == 0)
-	{
-		panic("6.1 Failed");
-	}
-	if (check_list_size(expectedNumOfFreeBlks) == 0)
-	{
-		panic("6.2 Failed");
-	}
-	//====================================================================//
-	/*Allocate After Free Scenarios */
-	void* expected = NULL;
-	{
-		//Consume 1st 7KB Block
-		actualSize = 7*kilo - sizeOfMetaData ;
-		expected_size = ROUNDUP(actualSize + sizeOfMetaData,2) ;
-		va = alloc_block(actualSize, DA_BF);
-		//Check returned va
-		expected = (void*)(startVAs[6*allocCntPerSize]);
-		if (check_block(va, expected, expected_size, 1) == 0)
-		{
-			panic("6.3 Failed");
-		}
-		expectedNumOfFreeBlks--;
-	}
-
-	cprintf("	7: Allocate After Free [should be placed in coalesced blocks]\n\n") ;
-
-	cprintf("		7.1: in block coalesces with PREV\n\n") ;
-	actualSize = 2*kilo - sizeOfMetaData;
-	expected_size = ROUNDUP(actualSize + sizeOfMetaData,2) ;
-	va = alloc_block(actualSize, DA_BF);
-	//Check returned va
-	expected = startVAs[2*allocCntPerSize];
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		panic("7.1 Failed");
-	}
-
-	expectedNumOfFreeBlks--;
-
-	actualSize = 8*kilo;
-	expected_size = ROUNDUP(actualSize + sizeOfMetaData,2) ;
-	va = alloc_block(actualSize, DA_BF);
-	//Check returned va
-	expected = startVAs[numOfAllocs*allocCntPerSize-1];
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		panic("7.2 Failed");
-	}
-
-	cprintf("		7.2: in block coalesces with PREV & NEXT\n\n") ;
-	actualSize = 2*kilo + 1;
-	expected_size = ROUNDUP(actualSize + sizeOfMetaData,2) ;
-	va = alloc_block(actualSize, DA_BF);
-	//Check returned va
-	expected = startVAs[4*allocCntPerSize - 2];
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		panic("7.3 Failed");
-	}
-
-	cprintf("		7.3: in block coalesces with NEXT [INTERNAL FRAGMENTATION]\n\n") ;
-	actualSize = 4*kilo + 10;
-	expected_size = allocSizes[0]+allocSizes[1]; //ROUNDUP(actualSize + sizeOfMetaData,2) ;
-	va = alloc_block(actualSize, DA_BF);
-	//Check returned va
-	expected = startVAs[1*allocCntPerSize - 1];
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		panic("7.4 Failed");
-	}
-	expectedNumOfFreeBlks--;
-
-	actualSize = 5*kilo - sizeOfMetaData;
-	expected_size = ROUNDUP(actualSize + sizeOfMetaData,2) ;
-	va = alloc_block(actualSize, DA_BF);
-	//Check returned va
-	expected = (void*)(KERNEL_HEAP_START + sizeOfMetaData);
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		panic("7.5 Failed");
-	}
-
-	actualSize = 3*kilo - sizeOfMetaData;
-	expected_size = ROUNDUP(actualSize + sizeOfMetaData,2) ;
-	va = alloc_block(actualSize, DA_BF);
-	//Check returned va
-	expected = (void*)(KERNEL_HEAP_START + 5*kilo + sizeOfMetaData);
-	if (check_block(va, expected, expected_size, 1) == 0)
-	{
-		panic("7.6 Failed");
-	}
-	expectedNumOfFreeBlks--;
-
-	if (check_list_size(expectedNumOfFreeBlks) == 0)
-	{
-		panic("7.7 Failed");
-	}
-
-	cprintf("Congratulations!! test free_block with BEST FIT completed successfully.\n");
-
 }
-
-void test_free_block_NF()
-{
-	panic("not implemented");
-}
-
-
-void test_realloc_block_FF_COMPLETE()
-{
-#if USE_KHEAP
-	panic("test_free_block: the kernel heap should be disabled. make sure USE_KHEAP = 0");
-	return;
-#endif
-
-	int eval = 0;
-	bool is_correct;
-
-	int initAllocatedSpace = 3*Mega;
-	//initialize_dynamic_allocator(KERNEL_HEAP_START, initAllocatedSpace);
-
-	void * va, *expectedVA;
-
-	uint32 actualSize, expectedSize;
-
-//create allocBlock, address, set data, add to array
-//create freeBlock, init(address), set data, add to freeBlockList
-
-//////////////////init///////////////////////
-/*	void *Beg = (void*) KERNEL_HEAP_START;
-	void *End = (Beg + initAllocatedSpace - sizeof(int));
-
-	int32 *b = (int32*)(Beg);
-	int32 *e = (int32*)(End);
-	*b = *e = 1;
-
-    //firstAllocBlock
-	struct BlockElement* allocatedBlock1 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-	uint32 allocBlock1Size = 20;
-	set_block_data((void*) allocatedBlock1, allocBlock1Size, 1);
-
-    //2 free Blocks
-	struct BlockElement* firstFreeBlock; //change
-	struct BlockElement* secondFreeBlock;
-
-	//secondAllocBlock
-	struct BlockElement* allocatedBlock2;
-	uint32 allocBlock2Size;*/
-
-	/*
-	allocatedBlock2 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-	allocBlock2Size = 16;
-	set_block_data((void*) allocatedBlock2, allocBlock2Size, 1);
-
-    firstFreeBlock = (struct BlockElement*) (Beg + 2 * sizeof(int)); // skip the begin block
-	secondFreeBlock = (struct BlockElement*) (Beg + 2 * sizeof(int)); // skip the begin block
-
-	set_block_data((void*) firstFreeBlock, uint32 totalSize, 0);
-	set_block_data((void*) secondFreeBlock, uint32 totalSize, 0);
-	LIST_INIT(&freeBlocksList);
-    //remove
-	//insert
-	LIST_INSERT_HEAD(&freeBlocksList, firstFreeBlock);
-	LIST_INSERT_BEFORE(&freeBlocksList, firstFreeBlock, secondFreeBlock);
-	*/
-//////////////////////////////////////////////////////////////////////////////
-
-
-
-
-	//====================================================================//
-	//[1] Test realloc with increased sizes [50%]
-	//====================================================================//
-
-	cprintf("1: Test calling realloc with increased sizes [50%].\n\n") ;
-	int blockIndex, block_size, block_status, old_size, new_size, newBlockIndex;
-////////////1.1////////////
-	cprintf("	1.1: reallocate in new place (allocated block)\n\n") ;
-	is_correct = 1;
-	{
-		void *Beg = (void*) KERNEL_HEAP_START;
-		void *End = (Beg + initAllocatedSpace - sizeof(int));
-
-		int32 *b = (int32*)(Beg);
-		int32 *e = (int32*)(End);
-		*b = *e = 1;
-
-		//firstAllocBlock
-		struct BlockElement* allocatedBlock1 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-		uint32 allocBlock1Size = 20;
-		set_block_data((void*) allocatedBlock1, allocBlock1Size, 1);
-
-//		//2 free Blocks
-//		struct BlockElement* firstFreeBlock; //change
-		struct BlockElement* secondFreeBlock;
-
-		//secondAllocBlock
-		struct BlockElement* allocatedBlock2;
-		uint32 allocBlock2Size;
-
-	    //heap (allocated[20 bytes], allocated[16 bytes], free[...])
-		allocatedBlock2 = (struct BlockElement*)(Beg + (7 * sizeof(int))); // 20 + 8
-		allocBlock2Size = 16;
-		set_block_data((void*) allocatedBlock2, allocBlock2Size, 1);
-
-		secondFreeBlock = (struct BlockElement*) (Beg + (11 * sizeof(int))); // 20 + 16 + 8
-		int ss = initAllocatedSpace - (44); //4 + 20 + 16 + 4
-		set_block_data((void*) secondFreeBlock, (uint32) ss, 0);
-
-		LIST_INIT(&freeBlocksList);
-
-		//insert
-		LIST_INSERT_HEAD(&freeBlocksList, secondFreeBlock);
-		///////////////////////////////////////
-
-		//old size --> allocBlockOne = 20 bytes.
-		new_size = 42;
-		expectedSize = (uint32) 50; //new_size + 8
-
-		expectedVA = Beg + (11 * sizeof(int)); // after beg --> 4 + 20 + 16 + 4 (second free block)
-		va = realloc_block_FF(allocatedBlock1, new_size);
-
-		//check return address (new location)
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #1.1.1: Failed\n");
-		}
-		//check old block --> will be free block
-		expectedSize = (uint32) 20; //20 (1) --> is free now?
-		if (check_block(allocatedBlock1, allocatedBlock1, expectedSize, 0) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #1.1.2: Failed\n");
-		}
-		//check content of reallocated block
-//		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex ||	*(endVAs[blockIndex]) != blockIndex)
-//		{
-//			is_correct = 0;
-//			cprintf("test_realloc_block_FF #3.1.2: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-//		}
-	}
-	if (is_correct)
-	{
-		eval += 10;
-		cprintf("	1.1 is Done \n\n");
-	}
-
-////////////1.2////////////
-	cprintf("	1.2: reallocate in new place (free block but not enough)\n\n") ;
-	is_correct = 1;
-	{
-		void *Beg = (void*) KERNEL_HEAP_START;
-		void *End = (Beg + initAllocatedSpace - sizeof(int));
-
-		int32 *b = (int32*)(Beg);
-		int32 *e = (int32*)(End);
-		*b = *e = 1;
-
-		//firstAllocBlock
-		struct BlockElement* allocatedBlock1 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-		uint32 allocBlock1Size = 20;
-		set_block_data((void*) allocatedBlock1, allocBlock1Size, 1);
-
-		//2 free Blocks
-		struct BlockElement* firstFreeBlock; //change
-		struct BlockElement* secondFreeBlock;
-
-		//secondAllocBlock
-		struct BlockElement* allocatedBlock2;
-		uint32 allocBlock2Size;
-
-		//heap
-		allocatedBlock2 = (struct BlockElement*)(Beg + (11 * sizeof(int))); // 20 + 16 + 8
-		allocBlock2Size = 16;
-		set_block_data((void*) allocatedBlock2, allocBlock2Size, 1);
-
-		firstFreeBlock = (struct BlockElement*) (Beg +  (7 * sizeof(int))); // 20 + 8
-		secondFreeBlock = (struct BlockElement*) (Beg + (15 * sizeof(int))); // 20 + 16 + 16 + 8
-
-		set_block_data((void*) firstFreeBlock, (uint32) 16, 0);
-		int ss = initAllocatedSpace - (60);
-		set_block_data((void*) secondFreeBlock, (uint32) ss, 0); //4 + 20 + 16 + 16 + 4
-		LIST_INIT(&freeBlocksList);
-
-		//insert
-		LIST_INSERT_HEAD(&freeBlocksList, firstFreeBlock);
-		LIST_INSERT_BEFORE(&freeBlocksList, firstFreeBlock, secondFreeBlock);
-		///////////////////////////////////////
-
-		//old size --> allocBlockOne = 20 bytes.
-		new_size = 42;
-		expectedSize = (uint32) 50; //new_size + 8
-
-     	expectedVA = Beg + (15 * sizeof(int)); // after beg --> 4 + 20 + 16 + 16 + 4
-        va = realloc_block_FF(allocatedBlock1, new_size);
-
-		//check return address (new location)
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #1.2.1: Failed\n");
-		}
-		//check old block --> will be free block
-		expectedSize = (uint32) 36; //20 (1) + 16 (0)
-		if (check_block(allocatedBlock1, allocatedBlock1, expectedSize, 0) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #1.2.2: Failed\n");
-		}
-//		//check content of reallocated block
-//		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex ||	*(endVAs[blockIndex]) != blockIndex)
-//		{
-//			is_correct = 0;
-//			cprintf("test_realloc_block_FF #1.2.2: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-//		}
-	}
-	if (is_correct)
-	{
-		eval += 10;
-		cprintf("	1.2 is Done \n\n");
-	}
-
-////////////1.3////////////
-	cprintf("	1.3: reallocate in same place (free block, Exactly the size)\n\n") ;
-	is_correct = 1;
-	{
-		void *Beg = (void*) KERNEL_HEAP_START;
-		void *End = (Beg + initAllocatedSpace - sizeof(int));
-
-		int32 *b = (int32*)(Beg);
-		int32 *e = (int32*)(End);
-		*b = *e = 1;
-
-		//firstAllocBlock
-		struct BlockElement* allocatedBlock1 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-		uint32 allocBlock1Size = 20;
-		set_block_data((void*) allocatedBlock1, allocBlock1Size, 1);
-
-		//2 free Blocks
-		struct BlockElement* firstFreeBlock; //change
-		struct BlockElement* secondFreeBlock;
-
-		//secondAllocBlock
-		struct BlockElement* allocatedBlock2;
-		uint32 allocBlock2Size;
-
-		//heap
-		allocatedBlock2 = (struct BlockElement*)(Beg + 58); // 20 + 30 + 8
-		allocBlock2Size = 16;
-		set_block_data((void*) allocatedBlock2, allocBlock2Size, 1);
-
-		firstFreeBlock = (struct BlockElement*) (Beg +  7 * sizeof(int)); // 20 + 8
-		secondFreeBlock = (struct BlockElement*) (Beg + 74); // 20 + 30 + 16 + 8
-
-		set_block_data((void*) firstFreeBlock, (uint32) 30, 0);
-		int ss = initAllocatedSpace - (74); // initAllocatedSpace - (4 + 20 + 30 + 16 + 4)
-		set_block_data((void*) secondFreeBlock, (uint32) ss, 0);
-		LIST_INIT(&freeBlocksList);
-
-		//insert
-		LIST_INSERT_HEAD(&freeBlocksList, firstFreeBlock);
-		LIST_INSERT_BEFORE(&freeBlocksList, firstFreeBlock, secondFreeBlock);
-		///////////////////////////////////////
-
-		//old size --> allocBlockOne = 20 bytes.
-		new_size = 42;
-		expectedSize = (uint32) 50; //new_size + 8
-
-		expectedVA = Beg + (2 * sizeof(int)); // after beg --> 4 + 4
-		va = realloc_block_FF(allocatedBlock1, new_size);
-
-		//check return address (same location)
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #1.3.1: Failed\n");
-		}
-//		//check content of reallocated block
-//		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex ||	*(endVAs[blockIndex]) != blockIndex)
-//		{
-//			is_correct = 0;
-//			cprintf("test_realloc_block_FF #3.1.2: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-//		}
-	}
-	if (is_correct)
-	{
-		eval += 10;
-		cprintf("	1.3 is Done \n\n");
-	}
-//////////////1.4////////////
-	cprintf("	1.4: reallocate in same place (free block, new free block )\n\n") ;
-	is_correct = 1;
-	{
-		void *Beg = (void*) KERNEL_HEAP_START;
-		void *End = (Beg + initAllocatedSpace - sizeof(int));
-
-		int32 *b = (int32*)(Beg);
-		int32 *e = (int32*)(End);
-		*b = *e = 1;
-
-		//firstAllocBlock
-		struct BlockElement* allocatedBlock1 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-		uint32 allocBlock1Size = 20;
-		set_block_data((void*) allocatedBlock1, allocBlock1Size, 1);
-
-		//2 free Blocks
-		struct BlockElement* firstFreeBlock; //change
-		struct BlockElement* secondFreeBlock;
-
-		//secondAllocBlock
-		struct BlockElement* allocatedBlock2;
-		uint32 allocBlock2Size;
-
-		//heap
-		allocatedBlock2 = (struct BlockElement*)(Beg + (22 * sizeof(int))); // 20 + 60 + 8
-		allocBlock2Size = 16;
-		set_block_data((void*) allocatedBlock2, allocBlock2Size, 1);
-
-		firstFreeBlock = (struct BlockElement*) (Beg +  (7 * sizeof(int))); // 20 + 8
-		secondFreeBlock = (struct BlockElement*) (Beg + (26 * sizeof(int))); // 20 + 60 + 16 + 8
-
-		set_block_data((void*) firstFreeBlock, (uint32) 60, 0);
-		int ss = initAllocatedSpace - (104); //4 + 20 + 60 + 16 + 4
-		set_block_data((void*) secondFreeBlock, (uint32) ss, 0);
-		LIST_INIT(&freeBlocksList);
-
-		//insert
-		LIST_INSERT_HEAD(&freeBlocksList, firstFreeBlock);
-		LIST_INSERT_BEFORE(&freeBlocksList, firstFreeBlock, secondFreeBlock);
-		///////////////////////////////////////
-
-		//old size --> allocBlockOne = 20 bytes.
-		new_size = 42;
-		expectedSize = (uint32) 50; //new_size + 8
-
-    	expectedVA = Beg + (2 * sizeof(int)); // after beg --> 4 + 4
-		va = realloc_block_FF(allocatedBlock1, new_size);
-
-		//check return address (same location)
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #1.4.1: Failed\n");
-		}
-		//check old free block
-		//check new size and new address (new free block) --> will be --> size = 30 bytes, address = beg + (8 + 50)
-		expectedSize = (uint32) 30; //20 (1) + 16 (0)
-		if (check_block(Beg + 58, Beg + 58, expectedSize, 0) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #1.4.2: Failed\n");
-		}
-//		//check content of reallocated block
-//		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex ||	*(endVAs[blockIndex]) != blockIndex)
-//		{
-//			is_correct = 0;
-//			cprintf("test_realloc_block_FF #3.1.2: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-//		}
-	}
-	if (is_correct)
-	{
-		eval += 10;
-		cprintf("	1.4 is Done \n\n");
-	}
-
-//////////////1.5////////////
-	cprintf("	1.5: reallocate in same place (NO relocate - padding)\n\n") ;
-	is_correct = 1;
-	{
-		void *Beg = (void*) KERNEL_HEAP_START;
-		void *End = (Beg + initAllocatedSpace - sizeof(int));
-
-		int32 *b = (int32*)(Beg);
-		int32 *e = (int32*)(End);
-		*b = *e = 1;
-
-		//firstAllocBlock
-		struct BlockElement* allocatedBlock1 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-		uint32 allocBlock1Size = 20;
-		set_block_data((void*) allocatedBlock1, allocBlock1Size, 1);
-
-		//2 free Blocks
-		struct BlockElement* firstFreeBlock; //change
-		struct BlockElement* secondFreeBlock;
-
-		//secondAllocBlock
-		struct BlockElement* allocatedBlock2;
-		uint32 allocBlock2Size;
-
-		//heap
-		allocatedBlock2 = (struct BlockElement*)(Beg + (17 * sizeof(int))); // 20 + 40 + 8
-		allocBlock2Size = 16;
-		set_block_data((void*) allocatedBlock2, allocBlock2Size, 1);
-
-		firstFreeBlock = (struct BlockElement*) (Beg +  7 * sizeof(int)); // 20 + 8
-		secondFreeBlock = (struct BlockElement*) (Beg + 21 * sizeof(int)); // 20 + 40 + 16 + 8
-
-		set_block_data((void*) firstFreeBlock, (uint32) 40, 0);
-		int ss = initAllocatedSpace - (84); // initAllocatedSpace - (4 + 20 + 40 + 16 + 4)
-		set_block_data((void*) secondFreeBlock, (uint32) ss, 0);
-		LIST_INIT(&freeBlocksList);
-
-		//insert
-		LIST_INSERT_HEAD(&freeBlocksList, firstFreeBlock);
-		LIST_INSERT_BEFORE(&freeBlocksList, firstFreeBlock, secondFreeBlock);
-		///////////////////////////////////////
-
-		//old size --> allocBlockOne = 20 bytes.
-		new_size = 42;
-		expectedSize = (uint32) 60; //new_size + 8 + (10)
-
-		expectedVA = Beg + (2 * sizeof(int)); // after beg --> 4 + 4
-		va = realloc_block_FF(allocatedBlock1, new_size);
-
-		//check return address (same location)
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #1.5.1: Failed\n");
-		}
-//		//check content of reallocated block
-//		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex ||	*(endVAs[blockIndex]) != blockIndex)
-//		{
-//			is_correct = 0;
-//			cprintf("test_realloc_block_FF #3.1.2: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-//		}
-	}
-	if (is_correct)
-	{
-		eval += 10;
-		cprintf("	1.5 is Done \n\n");
-	}
-
-
-	//====================================================================//
-	//[2] Test realloc with decreased sizes
-	//====================================================================//
-	cprintf("1: Test calling realloc with decreased sizes [30%].\n\n") ;
-	//int blockIndex, block_size, block_status, old_size, new_size, newBlockIndex;
-////////////2.1////////////
-	cprintf("	2.1: reallocate in same place (free block)\n\n") ;
-	is_correct = 1;
-	{
-		void *Beg = (void*) KERNEL_HEAP_START;
-		void *End = (Beg + initAllocatedSpace - sizeof(int));
-
-		int32 *b = (int32*)(Beg);
-		int32 *e = (int32*)(End);
-		*b = *e = 1;
-
-		//firstAllocBlock
-		struct BlockElement* allocatedBlock1 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-		uint32 allocBlock1Size = 30; //change
-		set_block_data((void*) allocatedBlock1, allocBlock1Size, 1);
-
-		//free Blocks
-		struct BlockElement* firstFreeBlock;
-
-		//heap (allocated[30 bytes], free[...])
-		firstFreeBlock = (struct BlockElement*) (Beg + 38); // 30 + 8
-		int ss = initAllocatedSpace - (38); //4 + 30 + 4
-		set_block_data((void*) firstFreeBlock, (uint32) ss, 0);
-
-		LIST_INIT(&freeBlocksList);
-
-		//insert
-		LIST_INSERT_HEAD(&freeBlocksList, firstFreeBlock);
-		///////////////////////////////////////
-
-		//old size --> allocBlockOne = 20 bytes.
-		new_size = 12;
-		expectedSize = (uint32) 20; //new_size + 8
-
-		expectedVA = Beg + (2 * sizeof(int)); // after beg --> 8
-		va = realloc_block_FF(allocatedBlock1, new_size);
-
-		//check return address (same location)
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #2.1.1: Failed\n");
-		}
-		//check old free block
-		//check new size and new address (new free block) --> will be --> size = 30 bytes, address = beg + (8 + 50)
-		expectedSize = (uint32) initAllocatedSpace - 28; //initAllocatedSpace - [(28)]
-		if (check_block(Beg + 28, Beg + 28, expectedSize, 0) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #2.1.2: Failed\n");
-		}
-		//check content of reallocated block
-//		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex ||	*(endVAs[blockIndex]) != blockIndex)
-//		{
-//			is_correct = 0;
-//			cprintf("test_realloc_block_FF #3.1.2: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-//		}
-	}
-	if (is_correct)
-	{
-		eval += 10;
-		cprintf("	2.1 is Done \n\n");
-	}
-
-////////////2.2////////////
-	cprintf("	2.2: reallocate in same place (allocated block , padding)\n\n") ;
-	is_correct = 1;
-	{
-		void *Beg = (void*) KERNEL_HEAP_START;
-		void *End = (Beg + initAllocatedSpace - sizeof(int));
-
-		int32 *b = (int32*)(Beg);
-		int32 *e = (int32*)(End);
-		*b = *e = 1;
-
-		//firstAllocBlock
-		struct BlockElement* allocatedBlock1 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-		uint32 allocBlock1Size = 30;
-		set_block_data((void*) allocatedBlock1, allocBlock1Size, 1);
-
-		//secondAllocBlock
-		struct BlockElement* allocatedBlock2;
-		uint32 allocBlock2Size;
-
-		//2 free Blocks
-		struct BlockElement* firstFreeBlock;
-
-
-		//heap [allocated(30 bytes), allocated(16 bytes), free[...]]
-		allocatedBlock2 = (struct BlockElement*)(Beg + 38); // 30 + 8
-		allocBlock2Size = 16;
-		set_block_data((void*) allocatedBlock2, allocBlock2Size, 1);
-
-		firstFreeBlock = (struct BlockElement*) (Beg +  54); // 30 + 16 + 8
-		int ss = initAllocatedSpace - (54); // 30 + 16 + 8
-		set_block_data((void*) firstFreeBlock, (uint32) ss, 0);
-
-		LIST_INIT(&freeBlocksList);
-
-		//insert
-		LIST_INSERT_HEAD(&freeBlocksList, firstFreeBlock);
-		///////////////////////////////////////
-
-		//old size --> allocBlockOne = 20 bytes.
-		new_size = 12; // 20 - 8
-		expectedSize = (uint32) 30; //new_size + 8 + 10 padding
-
-		expectedVA = Beg + (2 * sizeof(int)); // after beg --> 8
-		va = realloc_block_FF(allocatedBlock1, new_size);
-
-		//check return address (same location)
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #2.2.1: Failed\n");
-		}
-		//check next block --> allocated
-		expectedSize = (uint32) 16;
-		if (check_block(allocatedBlock2, allocatedBlock2, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #2.2.2: Failed\n");
-		}
-//		//check content of reallocated block
-//		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex ||	*(endVAs[blockIndex]) != blockIndex)
-//		{
-//			is_correct = 0;
-//			cprintf("test_realloc_block_FF #1.2.2: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-//		}
-	}
-	if (is_correct)
-	{
-		eval += 10;
-		cprintf("	2.2 is Done \n\n");
-	}
-
-////////////2.3////////////
-	cprintf("	2.3: reallocate in same place (allocated block, merge)\n\n") ;
-	is_correct = 1;
-	{
-		void *Beg = (void*) KERNEL_HEAP_START;
-		void *End = (Beg + initAllocatedSpace - sizeof(int));
-
-		int32 *b = (int32*)(Beg);
-		int32 *e = (int32*)(End);
-		*b = *e = 1;
-
-		//firstAllocBlock
-		struct BlockElement* allocatedBlock1 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-		uint32 allocBlock1Size = 50;
-		set_block_data((void*) allocatedBlock1, allocBlock1Size, 1);
-
-		//secondAllocBlock
-		struct BlockElement* allocatedBlock2;
-		uint32 allocBlock2Size;
-
-		//2 free Blocks
-		struct BlockElement* firstFreeBlock;
-
-
-		//heap [allocated(50 bytes), allocated(16 bytes), free[...]]
-		allocatedBlock2 = (struct BlockElement*)(Beg + 58); // 50 + 8
-		allocBlock2Size = 16;
-		set_block_data((void*) allocatedBlock2, allocBlock2Size, 1);
-
-		firstFreeBlock = (struct BlockElement*) (Beg +  74); // 50 + 16 + 8
-		int ss = initAllocatedSpace - (74); // 50 + 16 + 8
-		set_block_data((void*) firstFreeBlock, (uint32) ss, 0);
-
-		LIST_INIT(&freeBlocksList);
-
-		//insert
-		LIST_INSERT_HEAD(&freeBlocksList, firstFreeBlock);
-		///////////////////////////////////////
-
-		//old size --> allocBlockOne = 20 bytes.
-		new_size = 12; // 20 - 8
-		expectedSize = (uint32) 20; //new_size + 8
-
-		expectedVA = Beg + (2 * sizeof(int)); // after beg --> 8
-		va = realloc_block_FF(allocatedBlock1, new_size);
-
-		//check return address (same location)
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #2.3.1: Failed\n");
-		}
-		//check new free block
-		expectedSize = (uint32) 30;
-		if (check_block(Beg + 28, Beg + 28, expectedSize, 0) == 0) //beg + 8 + 20
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #2.3.2: Failed\n");
-		}
-	}
-	if (is_correct)
-	{
-		eval += 10;
-		cprintf("	2.3 is Done \n\n");
-	}
-
-
-	//====================================================================//
-	//[3] Test realloc with same sizes
-	//====================================================================//
-	cprintf("	2.3: reallocate in same place (allocated block, merge)\n\n") ;
-	is_correct = 1;
-	{
-		void *Beg = (void*) KERNEL_HEAP_START;
-		void *End = (Beg + initAllocatedSpace - sizeof(int));
-
-		int32 *b = (int32*)(Beg);
-		int32 *e = (int32*)(End);
-		*b = *e = 1;
-
-		//firstAllocBlock
-		struct BlockElement* allocatedBlock1 = (struct BlockElement*)(Beg + (2 * sizeof(int)));
-		uint32 allocBlock1Size = 30;
-		set_block_data((void*) allocatedBlock1, allocBlock1Size, 1);
-
-		//secondAllocBlock
-		struct BlockElement* allocatedBlock2;
-		uint32 allocBlock2Size;
-
-		//2 free Blocks
-		struct BlockElement* firstFreeBlock;
-
-
-		//heap [allocated(30 bytes), allocated(16 bytes), free[...]]
-		allocatedBlock2 = (struct BlockElement*)(Beg + 38); // 30 + 8
-		allocBlock2Size = 16;
-		set_block_data((void*) allocatedBlock2, allocBlock2Size, 1);
-
-		firstFreeBlock = (struct BlockElement*) (Beg +  54); // 30 + 16 + 8
-		int ss = initAllocatedSpace - (54); // 30 + 16 + 8
-		set_block_data((void*) firstFreeBlock, (uint32) ss, 0);
-
-		LIST_INIT(&freeBlocksList);
-
-		//insert
-		LIST_INSERT_HEAD(&freeBlocksList, firstFreeBlock);
-		///////////////////////////////////////
-
-		//old size --> allocBlockOne = 20 bytes.
-		new_size = 22; // 30 - 8
-		expectedSize = (uint32) 30; //new_size + 8 + 10 padding
-
-		expectedVA = Beg + (2 * sizeof(int)); // after beg --> 8
-		va = realloc_block_FF(allocatedBlock1, new_size);
-
-		//check return address (same location and same size)
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #2.2.1: Failed\n");
-		}
-		//check next block --> allocated
-		expectedSize = (uint32) 16;
-		if (check_block(allocatedBlock2, allocatedBlock2, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #2.2.2: Failed\n");
-		}
-	}
-	if (is_correct)
-	{
-		eval += 20;
-		cprintf("	2.3 is Done \n\n");
-	}
-
-	cprintf("[Complete] test realloc_block with FIRST FIT completed. Evaluation = %d%\n", eval);
-	//panic("this is UNSEEN test");
-}
-
-
-void test_realloc_block_FF()
-{
-#if USE_KHEAP
-	panic("test_free_block: the kernel heap should be disabled. make sure USE_KHEAP = 0");
-	return;
-#endif
-
-	//TODO: [PROJECT'24.MS1 - #09] [3] DYNAMIC ALLOCATOR - test_realloc_block_FF()
-	//CHECK MISSING CASES AND TRY TO TEST THEM !
-
-	cprintf("===================================================\n");
-	cprintf("*****NOTE: THIS IS A PARTIAL TEST FOR REALLOC******\n") ;
-	cprintf("You need to pick-up the missing tests and test them\n") ;
-	cprintf("===================================================\n");
-
-	int eval = 0;
-	bool is_correct;
-
-	int initAllocatedSpace = 3*Mega;
-	initialize_dynamic_allocator(KERNEL_HEAP_START, initAllocatedSpace);
-
-	void * va, *expectedVA ;
-	//====================================================================//
-	//[1] Test calling realloc with VA = NULL. It should call malloc
-	//====================================================================//
-	/* Try to allocate set of blocks with different sizes*/
-	cprintf("1: Test calling realloc with VA = NULL.[10%]\n\n") ;
-	is_correct = 1;
-
-	int totalSizes = 0;
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		totalSizes += allocSizes[i] * allocCntPerSize ;
-	}
-	int remainSize = initAllocatedSpace - totalSizes - 2*sizeof(int) ; //exclude size of "DA Begin & End" blocks
-	if (remainSize <= 0)
-		panic("test_realloc_block_FF is not configured correctly. Consider updating the initial allocated space OR the required allocations");
-
-	int idx = 0;
-	void* curVA = (void*) KERNEL_HEAP_START + sizeof(int) /*BEG block*/ ;
-	uint32 actualSize, expectedSize;
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		for (int j = 0; j < allocCntPerSize; ++j)
-		{
-			actualSize = allocSizes[i] - sizeOfMetaData;
-			expectedSize = ROUNDUP(actualSize + sizeOfMetaData, 2);
-			expectedVA = (curVA + sizeOfMetaData/2);
-			va = startVAs[idx] = realloc_block_FF(NULL, actualSize);
-			midVAs[idx] = va + actualSize/2 ;
-			endVAs[idx] = va + actualSize - sizeof(short);
-			if (check_block(va, expectedVA, expectedSize, 1) == 0)
-			{
-				panic("test_realloc_block_FF #1.1.%d: WRONG ALLOC - it return wrong address. Expected %x, Actual %x", idx, curVA + sizeOfMetaData ,va);
-			}
-			curVA += allocSizes[i] ;
-			*(startVAs[idx]) = idx ;
-			*(midVAs[idx]) = idx ;
-			*(endVAs[idx]) = idx ;
-			idx++;
-		}
-	}
-
-	//====================================================================//
-	/* Try to allocate a block with a size equal to the size of the first existing free block*/
-	actualSize = remainSize - sizeOfMetaData;
-	expectedSize = ROUNDUP(actualSize + sizeOfMetaData, 2);
-	expectedVA = (curVA + sizeOfMetaData/2);
-
-	va = startVAs[idx] = realloc_block_FF(NULL, actualSize);
-
-	midVAs[idx] = va + actualSize/2 ;
-	endVAs[idx] = va + actualSize - sizeof(short);
-	//Check returned va
-	if (check_block(va, expectedVA, expectedSize, 1) == 0)
-	{
-		panic("test_realloc_block_FF #1.2.0: WRONG ALLOC - it return wrong address.");
-	}
-	*(startVAs[idx]) = idx ;
-	*(midVAs[idx]) = idx ;
-	*(endVAs[idx]) = idx ;
-
-	//====================================================================//
-	/* Check stored data inside each allocated block*/
-	for (int i = 0; i < idx; ++i)
-	{
-		if (*(startVAs[i]) != i || *(midVAs[i]) != i ||	*(endVAs[i]) != i)
-			panic("test_realloc_block_FF #1.3.%d: WRONG! content of the block is not correct. Expected %d",i, i);
-	}
-
-	if (is_correct)
-	{
-		eval += 10;
-	}
-
-	//====================================================================//
-	//[2] Test krealloc by passing size = 0. It should call free
-	//====================================================================//
-	cprintf("2: Test calling realloc with SIZE = 0.[10%]\n\n") ;
-	is_correct = 1;
-
-	//Free set of blocks with different sizes (first block of each size)
-	for (int i = 0; i < numOfAllocs; ++i)
-	{
-		va = realloc_block_FF(startVAs[i*allocCntPerSize], 0);
-
-		uint32 block_size = get_block_size(startVAs[i*allocCntPerSize]) ;
-		expectedSize = allocSizes[i];
-		expectedVA = va;
-		if (check_block(startVAs[i*allocCntPerSize], startVAs[i*allocCntPerSize], expectedSize, 0) == 0)
-		{
-			panic("test_realloc_block_FF #2.1.%d: Failed.", i);
-		}
-		if(va != NULL)
-			panic("test_realloc_block_FF #2.2.%d: it should return NULL.", i);
-	}
-
-	//test calling it with NULL & ZERO
-	va = realloc_block_FF(NULL, 0);
-	if(va != NULL)
-		panic("test_realloc_block_FF #2.3.0: it should return NULL.");
-
-	//====================================================================//
-	/* Check stored data inside each allocated block*/
-	for (int i = 0; i < idx; ++i)
-	{
-		if (i % allocCntPerSize == 0)
-			continue;
-		if (*(startVAs[i]) != i || *(midVAs[i]) != i ||	*(endVAs[i]) != i)
-			panic("test_realloc_block_FF #2.4.%d: WRONG! content of the block is not correct. Expected %d",i, i);
-	}
-
-	uint32 expectedNumOfFreeBlks = numOfAllocs;
-	if (check_list_size(expectedNumOfFreeBlks) == 0)
-	{
-		panic("2.5 Failed");
-	}
-
-	if (is_correct)
-	{
-		eval += 10;
-	}
-
-	//====================================================================//
-	//[3] Test realloc with increased sizes
-	//====================================================================//
-	cprintf("3: Test calling realloc with increased sizes [50%].\n\n") ;
-	int blockIndex, block_size, block_status, old_size, new_size, newBlockIndex;
-	//[3.1] reallocate in same place (NO relocate - split)
-	cprintf("	3.1: reallocate in same place (NO relocate - split)\n\n") ;
-	is_correct = 1;
-	{
-		blockIndex = 4*allocCntPerSize - 1 ;
-		new_size = allocSizes[3] /*12+16 B*/ + allocSizes[4]/2 /*2KB/2*/ - sizeOfMetaData;
-		expectedSize = ROUNDUP(new_size + sizeOfMetaData, 2);
-		expectedVA = startVAs[blockIndex];
-
-		va = realloc_block_FF(startVAs[blockIndex], new_size);
-
-		//check return address
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #3.1.1: Failed\n");
-		}
-		//check content of reallocated block
-		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex ||	*(endVAs[blockIndex]) != blockIndex)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #3.1.2: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-		}
-	}
-	if (is_correct)
-	{
-		eval += 25;
-	}
-
-	//[3.2] reallocate in same place (NO relocate - NO split)
-	cprintf("	3.2: reallocate in same place (NO relocate - NO split)\n\n") ;
-	is_correct = 1;
-	{
-		blockIndex = 4*allocCntPerSize - 1 ;
-		//new_size = allocSizes[3] /*12+16B + 2KB/2*/ + allocSizes[4]/2 /*2KB/2*/ - sizeOfMetaData;
-		new_size = allocSizes[3] + allocSizes[4] - sizeOfMetaData;
-		expectedSize = ROUNDUP(new_size + sizeOfMetaData, 2);
-		expectedVA = startVAs[blockIndex];
-
-		va = realloc_block_FF(startVAs[blockIndex], new_size);
-
-		expectedNumOfFreeBlks--;
-
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #3.2.1: Failed\n");
-		}
-		//check content of reallocated block
-		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex ||	*(endVAs[blockIndex]) != blockIndex)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #3.2.2: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-		}
-
-		if (is_correct) is_correct = check_list_size(expectedNumOfFreeBlks);
-	}
-	if (is_correct)
-	{
-		eval += 25;
-	}
-
-	//====================================================================//
-	//[4] Test realloc with decreased sizes
-	//====================================================================//
-	cprintf("4: Test calling realloc with decreased sizes.[30%]\n\n") ;
-	//[4.1] next block is full (NO coalesce)
-	cprintf("	4.1: next block is full (NO coalesce)\n\n") ;
-	is_correct = 1;
-	{
-		blockIndex = 0*allocCntPerSize + 1; /*4KB*/
-		old_size = allocSizes[0] - sizeOfMetaData; /*4KB - sizeOfMetaData*/;
-		new_size = old_size - 1*kilo ;
-		expectedSize = ROUNDUP(new_size + sizeOfMetaData, 2);
-		expectedVA = startVAs[blockIndex];
-
-		va = realloc_block_FF(startVAs[blockIndex], new_size);
-
-		expectedNumOfFreeBlks++;
-
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #4.1.1: Failed\n");
-		}
-		//check new free block
-		struct BlockElement *newBlkAddr = (struct BlockElement *)(va + new_size + 2*sizeof(int));
-		cprintf("\nrealloc Test: newBlkAddr @va %x\n", newBlkAddr);
-		expectedSize = 1*kilo ;
-		if (check_block(newBlkAddr, newBlkAddr, expectedSize, 0) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #4.1.2: Failed\n");
-		}
-		//check content of reallocated block
-		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #4.1.3: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-		}
-
-		//Check # free blocks
-		if (is_correct) is_correct = check_list_size(expectedNumOfFreeBlks);
-
-	}
-	if (is_correct)
-	{
-		eval += 15;
-	}
-	cprintf("	4.2: next block is full (NO coalesce) [Internal Fragmentation]\n\n") ;
-
-	is_correct = 1;
-	{
-		blockIndex = 1*allocCntPerSize + 1;
-		old_size = allocSizes[1] - sizeOfMetaData;/*20 B*/
-		new_size = old_size - 6;
-		expectedSize = allocSizes[1]; /*Same block size [Internal Framgmentation]*/
-		expectedVA = startVAs[blockIndex];
-
-		va = realloc_block_FF(startVAs[blockIndex], new_size);
-
-		if (check_block(va, expectedVA, expectedSize, 1) == 0)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #4.2.1: Failed\n");
-		}
-		//check content of reallocated block
-		if (*(startVAs[blockIndex]) != blockIndex || *(midVAs[blockIndex]) != blockIndex)
-		{
-			is_correct = 0;
-			cprintf("test_realloc_block_FF #4.2.2: WRONG REALLOC! content of the block is not correct. Expected %d\n", blockIndex);
-		}
-
-		//Check # free blocks
-		if (is_correct) is_correct = check_list_size(expectedNumOfFreeBlks);
-
-	}
-	if (is_correct)
-	{
-		eval += 15;
-	}
-
-	cprintf("[PARTIAL] test realloc_block with FIRST FIT completed. Evaluation = %d%\n", eval);
-
-	// by us
-	//test_realloc_block_FF_COMPLETE();
-}
-
-
-
-
-
-//void test_realloc_block_FF_COMPLETE()
-//{
-//#if USE_KHEAP
-//	panic("test_free_block: the kernel heap should be disabled. make sure USE_KHEAP = 0");
-//	return;
-//#endif
-//
-//	panic("this is UNSEEN test");
-//
-//}
-
-
-
 
 
 /********************Helper Functions***************************/

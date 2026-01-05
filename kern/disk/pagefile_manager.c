@@ -85,6 +85,8 @@ void initialize_disk_page_file()
 		//disk_frames_info[i].references = 0;
 		LIST_INSERT_HEAD(&DiskFrameLists.disk_free_frame_list, &disk_frames_info[i]);
 	}
+
+	init_kspinlock(&DiskFrameLists.dfllock, "Disk FrameList Lock");
 }
 
 //
@@ -110,7 +112,7 @@ static inline uint32 to_disk_frame_number(struct FrameInfo *ptr_frame_info)
 int allocate_disk_frame(uint32 *dfn)
 {
 	int ret = 0;
-	acquire_spinlock(&DiskFrameLists.dfllock);
+	acquire_kspinlock(&DiskFrameLists.dfllock);
 	{
 		// Fill this function in
 		struct FrameInfo *ptr_frame_info = LIST_FIRST(&DiskFrameLists.disk_free_frame_list);
@@ -125,7 +127,7 @@ int allocate_disk_frame(uint32 *dfn)
 			*dfn = to_disk_frame_number(ptr_frame_info);
 		}
 	}
-	release_spinlock(&DiskFrameLists.dfllock);
+	release_kspinlock(&DiskFrameLists.dfllock);
 
 	return ret;
 }
@@ -137,11 +139,11 @@ inline void free_disk_frame(uint32 dfn)
 {
 	// Fill this function in
 	if(dfn == 0) return;
-	acquire_spinlock(&DiskFrameLists.dfllock);
+	acquire_kspinlock(&DiskFrameLists.dfllock);
 	{
 		LIST_INSERT_HEAD(&DiskFrameLists.disk_free_frame_list, &disk_frames_info[dfn]);
 	}
-	release_spinlock(&DiskFrameLists.dfllock);
+	release_kspinlock(&DiskFrameLists.dfllock);
 }
 
 int get_disk_page_table(uint32 *ptr_disk_page_directory, const uint32 virtual_address, int create, uint32 **ptr_disk_page_table)
@@ -348,6 +350,7 @@ int pf_update_env_page(struct Env* ptr_env, uint32 virtual_address, struct Frame
 		//				will lead to concurrency problems since it's shared among processes.
 		//				Instead, use PGFLTEMP as a local temporarily page at user space for this mapping
 		//				to do temp initialization of a frame.
+/*
 		map_frame(ptr_env->env_page_directory, modified_page_frame_info, (uint32)PGFLTEMP, 0);
 
 		ret = write_disk_page(dfn, (void*)ROUNDDOWN((uint32)PGFLTEMP, PAGE_SIZE));
@@ -357,8 +360,28 @@ int pf_update_env_page(struct Env* ptr_env, uint32 virtual_address, struct Frame
 		unmap_frame(ptr_env->env_page_directory, (uint32)PGFLTEMP);
 		// Return it to its original status
 		modified_page_frame_info->references -= 1;
+*/
 
-		//cprintf("[%s] updating page\n",ptr_env->prog_name);
+		//FIX'25 (el7): instead of using a TEMP location to update, use the given virtual_address
+		// even if it's not present (e.g. in LRU 2nd list), temporarily set its PRESENT to 1
+		//1. Get current permissions
+		uint32 *ptrTable ;
+		get_page_table(ptr_env->env_page_directory, virtual_address, &ptrTable);
+		uint32 origPerms = ptrTable[PTX(virtual_address)] & 0xFFF;
+		//2. If NOT PRESENT, temporarily set its PRESENT
+		if ((origPerms & PERM_PRESENT) == 0)
+		{
+			ptrTable[PTX(virtual_address)] |= PERM_PRESENT ;
+		}
+		//3. Write the disk page
+		ret = write_disk_page(dfn, (void*)ROUNDDOWN(virtual_address, PAGE_SIZE));
+		//4. Restore the original permissions
+		ptrTable[PTX(virtual_address)] &= 0xFFFFF000 ;
+		ptrTable[PTX(virtual_address)] |= origPerms ;
+		//5. Clear modified bit
+		ptrTable[PTX(virtual_address)] &= ~PERM_MODIFIED;
+
+//		cprintf("[%s] updating page at va %x\n",ptr_env->prog_name, virtual_address);
 	}
 #else
 	{
@@ -582,11 +605,10 @@ int pf_calculate_allocated_pages(struct Env* ptr_env)
 		}
 #endif
 
-		// unmap all PTEs in this page table
+		// count existing PTEs in this page table
 		uint32 ptIndex;
 		for (ptIndex = 0; ptIndex < 1024; ptIndex++)
 		{
-			// remove the disk page from disk page table
 			uint32 dfn=pt[ptIndex];
 			if(dfn != 0)
 				counter ++;
@@ -601,7 +623,7 @@ int pf_calculate_allocated_pages(struct Env* ptr_env)
 int pf_calculate_free_frames()
 {
 	uint32 totalFreeDiskFrames ;
-	acquire_spinlock(&DiskFrameLists.dfllock);
+	acquire_kspinlock(&DiskFrameLists.dfllock);
 	{
 		/*2023: UPDATE beased on suggestion from T112 2023.Term1*/
 		totalFreeDiskFrames = LIST_SIZE(&DiskFrameLists.disk_free_frame_list);
@@ -610,7 +632,7 @@ int pf_calculate_free_frames()
 		//		totalFreeDiskFrames++ ;
 		//	}
 	}
-	release_spinlock(&DiskFrameLists.dfllock);
+	release_kspinlock(&DiskFrameLists.dfllock);
 	return totalFreeDiskFrames;
 
 }

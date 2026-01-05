@@ -9,20 +9,66 @@ _main(void)
 {
 	int envID = sys_getenvid();
 
+	int numOfClerks = 3;
+	int agentCapacity = 20;
+	int numOfCustomers = 30;
+	int flight1NumOfCustomers = numOfCustomers/3;
+	int flight2NumOfCustomers = numOfCustomers/3;
+	int flight3NumOfCustomers = numOfCustomers - (flight1NumOfCustomers + flight2NumOfCustomers);
+
+	int flight1NumOfTickets = 15;
+	int flight2NumOfTickets = 8;
+
+	// *************************************************************************************************
+	/// Reading Inputs *********************************************************************************
+	// *************************************************************************************************
+	char Line[255] ;
+	char Chose;
+	sys_lock_cons();
+	{
+		cprintf("\n");
+		cprintf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+		cprintf("!!!! AIR PLANE RESERVATION !!!!\n");
+		cprintf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+		cprintf("\n");
+		cprintf("%~Default #customers = %d (equally divided over the 3 flights).\n"
+				"Flight1 Tickets = %d, Flight2 Tickets = %d\n"
+				"Agent Capacity = %d\n", numOfCustomers, flight1NumOfTickets, flight2NumOfTickets, agentCapacity) ;
+		Chose = 0 ;
+		while (Chose != 'y' && Chose != 'n' && Chose != 'Y' && Chose != 'N')
+		{
+			cprintf("%~Do you want to change these values(y/n)? ") ;
+			Chose = getchar() ;
+			cputchar(Chose);
+			cputchar('\n');
+			cputchar('\n');
+		}
+		if (Chose == 'y' || Chose == 'Y')
+		{
+			readline("Enter the capacity of the agent: ", Line);
+			agentCapacity = strtol(Line, NULL, 10) ;
+			readline("Enter the total number of customers: ", Line);
+			numOfCustomers = strtol(Line, NULL, 10) ;
+			flight1NumOfCustomers = flight2NumOfCustomers = numOfCustomers / 3;
+			flight3NumOfCustomers = numOfCustomers - (flight1NumOfCustomers + flight2NumOfCustomers);
+			readline("Enter # tickets of flight#1: ", Line);
+			flight1NumOfTickets = strtol(Line, NULL, 10) ;
+			readline("Enter # tickets of flight#2: ", Line);
+			flight2NumOfTickets = strtol(Line, NULL, 10) ;
+		}
+	}
+	sys_unlock_cons();
+
 	// *************************************************************************************************
 	/// Shared Variables Region ************************************************************************
 	// *************************************************************************************************
-
-	int numOfCustomers = 15;
-	int flight1Customers = 3;
-	int flight2Customers = 8;
-	int flight3Customers = 4;
-
-	int flight1NumOfTickets = 8;
-	int flight2NumOfTickets = 15;
-
+	char _isOpened[] = "isOpened";
+	char _agentCapacity[] = "agentCapacity";
 	char _customers[] = "customers";
 	char _custCounter[] = "custCounter";
+	char _flight1Customers[] = "flight1Customers";
+	char _flight2Customers[] = "flight2Customers";
+	char _flight3Customers[] = "flight3Customers";
 	char _flight1Counter[] = "flight1Counter";
 	char _flight2Counter[] = "flight2Counter";
 	char _flightBooked1Counter[] = "flightBooked1Counter";
@@ -41,37 +87,21 @@ _main(void)
 	char _clerk[] = "clerk";
 	char _custCounterCS[] = "custCounterCS";
 	char _custTerminated[] = "custTerminated";
+	char _clerkTerminated[] = "clerkTerminated";
 
 	char _taircl[] = "taircl";
 	char _taircu[] = "taircu";
 
 	struct Customer * custs;
-	custs = smalloc(_customers, sizeof(struct Customer)*numOfCustomers, 1);
+	custs = smalloc(_customers, sizeof(struct Customer)*(numOfCustomers+1), 1);
 	//sys_createSharedObject("customers", sizeof(struct Customer)*numOfCustomers, 1, (void**)&custs);
 
+	int* flight1Customers = smalloc(_flight1Customers, sizeof(int), 1); *flight1Customers = flight1NumOfCustomers;
+	int* flight2Customers = smalloc(_flight2Customers, sizeof(int), 1); *flight2Customers = flight2NumOfCustomers;
+	int* flight3Customers = smalloc(_flight3Customers, sizeof(int), 1); *flight3Customers = flight3NumOfCustomers;
 
-	{
-		int f1 = 0;
-		for(;f1<flight1Customers; ++f1)
-		{
-			custs[f1].booked = 0;
-			custs[f1].flightType = 1;
-		}
-
-		int f2=f1;
-		for(;f2<f1+flight2Customers; ++f2)
-		{
-			custs[f2].booked = 0;
-			custs[f2].flightType = 2;
-		}
-
-		int f3=f2;
-		for(;f3<f2+flight3Customers; ++f3)
-		{
-			custs[f3].booked = 0;
-			custs[f3].flightType = 3;
-		}
-	}
+	int* isOpened = smalloc(_isOpened, sizeof(int), 0);
+	*isOpened = 1;
 
 	int* custCounter = smalloc(_custCounter, sizeof(int), 1);
 	*custCounter = 0;
@@ -91,7 +121,7 @@ _main(void)
 	int* flight1BookedArr = smalloc(_flightBooked1Arr, sizeof(int)*flight1NumOfTickets, 1);
 	int* flight2BookedArr = smalloc(_flightBooked2Arr, sizeof(int)*flight2NumOfTickets, 1);
 
-	int* cust_ready_queue = smalloc(_cust_ready_queue, sizeof(int)*numOfCustomers, 1);
+	int* cust_ready_queue = smalloc(_cust_ready_queue, sizeof(int)*(numOfCustomers+1), 1);
 
 	int* queue_in = smalloc(_queue_in, sizeof(int), 1);
 	*queue_in = 0;
@@ -102,6 +132,7 @@ _main(void)
 	// *************************************************************************************************
 	/// Semaphores Region ******************************************************************************
 	// *************************************************************************************************
+	struct semaphore capacity = create_semaphore(_agentCapacity, agentCapacity);
 
 	struct semaphore flight1CS = create_semaphore(_flight1CS, 1);
 	struct semaphore flight2CS = create_semaphore(_flight2CS, 1);
@@ -114,6 +145,7 @@ _main(void)
 	struct semaphore cust_ready = create_semaphore(_cust_ready, 0);
 
 	struct semaphore custTerminated = create_semaphore(_custTerminated, 0);
+	struct semaphore clerkTerminated = create_semaphore(_clerkTerminated, 0);
 
 	struct semaphore* cust_finished = smalloc("cust_finished_array", numOfCustomers*sizeof(struct semaphore), 1);
 
@@ -132,16 +164,13 @@ _main(void)
 	// start all clerks and customers ******************************************************************
 	// *************************************************************************************************
 
-	//3 clerks
+	//clerks
 	uint32 envId;
-	envId = sys_create_env(_taircl, (myEnv->page_WS_max_size),(myEnv->SecondListSize), (myEnv->percentage_of_WS_pages_to_be_removed));
-	sys_run_env(envId);
-
-	envId = sys_create_env(_taircl, (myEnv->page_WS_max_size), (myEnv->SecondListSize),(myEnv->percentage_of_WS_pages_to_be_removed));
-	sys_run_env(envId);
-
-	envId = sys_create_env(_taircl, (myEnv->page_WS_max_size), (myEnv->SecondListSize),(myEnv->percentage_of_WS_pages_to_be_removed));
-	sys_run_env(envId);
+	for (int k = 0; k < numOfClerks; ++k)
+	{
+		envId = sys_create_env(_taircl, (myEnv->page_WS_max_size),(myEnv->SecondListSize), (myEnv->percentage_of_WS_pages_to_be_removed));
+		sys_run_env(envId);
+	}
 
 	//customers
 	int c;
@@ -161,9 +190,11 @@ _main(void)
 	}
 
 	env_sleep(1500);
-
-	//print out the results
 	int b;
+
+	sys_lock_cons();
+	{
+	//print out the results
 	for(b=0; b< (*flight1BookedCounter);++b)
 	{
 		cprintf("cust %d booked flight 1, originally ordered %d\n", flight1BookedArr[b], custs[flight1BookedArr[b]].flightType);
@@ -173,35 +204,50 @@ _main(void)
 	{
 		cprintf("cust %d booked flight 2, originally ordered %d\n", flight2BookedArr[b], custs[flight2BookedArr[b]].flightType);
 	}
+	}
+	sys_unlock_cons();
 
+	int numOfBookings = 0;
+	int numOfFCusts[3] = {0};
+
+	for(b=0; b< numOfCustomers;++b)
+	{
+		if (custs[b].booked)
+		{
+			numOfBookings++;
+			numOfFCusts[custs[b].flightType - 1]++ ;
+		}
+	}
+
+	sys_lock_cons();
+	{
+	cprintf("%~[*] FINAL RESULTS:\n");
+	cprintf("%~\tTotal number of customers = %d (Flight1# = %d, Flight2# = %d, Flight3# = %d)\n", numOfCustomers, flight1NumOfCustomers,flight2NumOfCustomers,flight3NumOfCustomers);
+	cprintf("%~\tTotal number of customers who receive tickets = %d (Flight1# = %d, Flight2# = %d, Flight3# = %d)\n", numOfBookings, numOfFCusts[0],numOfFCusts[1],numOfFCusts[2]);
+	}
+	sys_unlock_cons();
 	//check out the final results and semaphores
 	{
-		int f1 = 0;
-		for(;f1<flight1Customers; ++f1)
+		for(int c = 0; c < numOfCustomers; ++c)
 		{
-			if(find(flight1BookedArr, flight1NumOfTickets, f1) != 1)
+			if (custs[c].booked)
 			{
-				panic("Error, wrong booking for user %d\n", f1);
+				if(custs[c].flightType ==1 && find(flight1BookedArr, flight1NumOfTickets, c) != 1)
+				{
+					panic("Error, wrong booking for user %d\n", c);
+				}
+				if(custs[c].flightType ==2 && find(flight2BookedArr, flight2NumOfTickets, c) != 1)
+				{
+					panic("Error, wrong booking for user %d\n", c);
+				}
+				if(custs[c].flightType ==3 && ((find(flight1BookedArr, flight1NumOfTickets, c) + find(flight2BookedArr, flight2NumOfTickets, c)) != 2))
+				{
+					panic("Error, wrong booking for user %d\n", c);
+				}
 			}
 		}
 
-		int f2=f1;
-		for(;f2<f1+flight2Customers; ++f2)
-		{
-			if(find(flight2BookedArr, flight2NumOfTickets, f2) != 1)
-			{
-				panic("Error, wrong booking for user %d\n", f2);
-			}
-		}
-
-		int f3=f2;
-		for(;f3<f2+flight3Customers; ++f3)
-		{
-			if(find(flight1BookedArr, flight1NumOfTickets, f3) != 1 || find(flight2BookedArr, flight2NumOfTickets, f3) != 1)
-			{
-				panic("Error, wrong booking for user %d\n", f3);
-			}
-		}
+		assert(semaphore_count(capacity) == agentCapacity);
 
 		assert(semaphore_count(flight1CS) == 1);
 		assert(semaphore_count(flight2CS) == 1);
@@ -218,15 +264,32 @@ _main(void)
 		int s=0;
 		for(s=0; s<numOfCustomers; ++s)
 		{
-//			char prefix[30]="cust_finished";
-//			char id[5]; char cust_finishedSemaphoreName[50];
-//			ltostr(s, id);
-//			strcconcat(prefix, id, cust_finishedSemaphoreName);
-//			assert(sys_getSemaphoreValue(envID, cust_finishedSemaphoreName) ==  0);
 			assert(semaphore_count(cust_finished[s]) ==  0);
 		}
 
-		cprintf("Congratulations, All reservations are successfully done... have a nice flight :)\n");
+		atomic_cprintf("%~\nAll reservations are successfully done... have a nice flight :)\n");
+
+		//waste some time then close the agency
+		env_sleep(5000) ;
+		*isOpened = 0;
+		atomic_cprintf("\n%~The agency is closing now...\n");
+
+		//Signal all clerks to continue and recheck the isOpened flag
+		cust_ready_queue[numOfCustomers] = -1; //to indicate, for the clerk, there's no more customers
+		for (int k = 0; k < numOfClerks; ++k)
+		{
+			signal_semaphore(cust_ready);
+		}
+
+		//Wait all clerks to finished
+		for (int k = 0; k < numOfClerks; ++k)
+		{
+			wait_semaphore(clerkTerminated);
+		}
+
+		assert(semaphore_count(clerkTerminated) ==  0);
+
+		atomic_cprintf("%~\nCongratulations... Airplane Reservation App is Finished Successfully\n\n");
 	}
 
 }

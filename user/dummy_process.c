@@ -10,8 +10,8 @@ void _main(void)
 
 void high_complexity_function()
 {
-	uint32 end1 = RAND(0, 5000);
-	uint32 end2 = RAND(0, 5000);
+	uint32 end1 = RANDU(0, 5000);
+	uint32 end2 = RANDU(0, 5000);
 	int x = 10;
 	for(int i = 0; i <= end1; i++)
 	{

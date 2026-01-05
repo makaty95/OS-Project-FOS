@@ -63,10 +63,8 @@ void _main(void)
 		curTotalSize = sizeof(int);
 		for (int i = 0; i < numOfAllocs; ++i)
 		{
-
 			for (int j = 0; j < allocCntPerSize; ++j)
 			{
-
 				actualSize = allocSizes[i] - sizeOfMetaData;
 				va = startVAs[idx] = malloc(actualSize);
 				midVAs[idx] = va + actualSize/2 ;
@@ -80,15 +78,14 @@ void _main(void)
 				//so update the curVA & curTotalSize to skip this area
 				roundedTotalSize = ROUNDUP(curTotalSize, PAGE_SIZE);
 				int diff = (roundedTotalSize - curTotalSize) ;
-				if (diff > 0 && diff < (DYN_ALLOC_MIN_BLOCK_SIZE + sizeOfMetaData))
+				if (diff > 0 && diff < (DYN_ALLOC_MIN_BLOCK_SIZE + sizeOfMetaData  + sizeof(int) /*END block*/))
 				{
-//					cprintf("%~\n FRAGMENTATION: curVA = %x diff = %d\n", curVA, diff);
+					cprintf("%~\n FRAGMENTATION @allocSize#%d: curVA = %x diff = %d\n", i, curVA, diff);
 //					cprintf("%~\n Allocated block @ %x with size = %d\n", va, get_block_size(va));
 
 					curVA = ROUNDUP(curVA, PAGE_SIZE)- sizeof(int) /*next alloc will start at END Block (after sbrk)*/;
 					curTotalSize = roundedTotalSize - sizeof(int) /*exclude END Block*/;
 					expectedSize += diff - sizeof(int) /*exclude END Block*/;
-
 				}
 				else
 				{
@@ -97,7 +94,7 @@ void _main(void)
 				//============================================================
 				if (is_correct)
 				{
-					if (check_block(va, expectedVA, expectedSize, 1) == 0)
+					if (check_dynalloc_datastruct(va, expectedVA, expectedSize, 1) == 0)
 					{
 						if (is_correct)
 						{
@@ -106,7 +103,6 @@ void _main(void)
 						}
 					}
 				}
-				//cprintf("weiiird\n");
 				*(startVAs[idx]) = idx ;
 				*(midVAs[idx]) = idx ;
 				*(endVAs[idx]) = idx ;

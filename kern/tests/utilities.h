@@ -1,5 +1,6 @@
 #ifndef FOS_KERN_UTILITIES_H
 #define FOS_KERN_UTILITIES_H
+
 #ifndef FOS_KERNEL
 # error "This is a FOS kernel header; user programs should not #include it"
 #endif
@@ -8,7 +9,7 @@
 #include <inc/timerreg.h>
 #include <inc/memlayout.h>
 #include <inc/fixed_point.h>
-#include <kern/conc/spinlock.h>
+#include "../conc/kspinlock.h"
 
 inline unsigned int nearest_pow2_ceil(unsigned int x) ;
 inline unsigned int log2_ceil(unsigned int x) ;
@@ -32,7 +33,7 @@ int __firsttime;
 /************************/
 
 uint32 tstcnt;
-struct spinlock tstcntlock;
+struct kspinlock tstcntlock;
 void rsttst();
 void inctst();
 uint32 gettst();
@@ -43,4 +44,6 @@ void chktst(uint32 n);
 void fixedPt2Str(fixed_point_t f, int num_dec_digits, char* output);
 void sys_utilities(char* utilityName, int value);
 
+/*2025*/
+uint32* clone_kern_dir();
 #endif /* !FOS_KERN_UTILITIES_H */

@@ -4,14 +4,15 @@
 
 #include <inc/lib.h>
 
-char arr[PAGE_SIZE*12];
-char* ptr = (char* )0x0801000 ;
-char* ptr2 = (char* )0x0804000 ;
+char __arr__[PAGE_SIZE*12];
+char* __ptr__ = (char* )0x0801000 ;
+char* __ptr2__ = (char* )0x0804000 ;
 uint32 expectedInitialVAs[11] = {
-		0x200000, 0x201000, 0x202000, 0x203000, 0x204000, 0x205000, 					//Unused
-		0x800000, 0x801000, 0x802000, 0x803000,											//Code & Data
-		0xeebfd000, /*0xedbfd000 will be created during the call of sys_check_WS_list*/ //Stack
-} ;
+		0x800000, 0x801000, 0x802000,		//Code
+		0x803000,0x804000,0x805000,0x806000,0x807000,0x808000,0x809000, 	//Data
+		0xeebfd000, 	//Stack
+		} ;
+
 
 void _main(void)
 {
@@ -23,7 +24,7 @@ void _main(void)
 
 #if USE_KHEAP
 	{
-		found = sys_check_WS_list(expectedInitialVAs, 11, 0x200000, 1);
+		found = sys_check_WS_list(expectedInitialVAs, 11, 0x800000, 1);
 		if (found != 1) panic("INITIAL PAGE WS entry checking failed! Review size of the WS!!\n*****IF CORRECT, CHECK THE ISSUE WITH THE STAFF*****");
 	}
 #else
@@ -33,37 +34,39 @@ void _main(void)
 	int freePages = sys_calculate_free_frames();
 	int usedDiskPages = sys_pf_calculate_allocated_pages();
 
+	//Writing (Modified)
+	__arr__[PAGE_SIZE*10-1] = 'a' ;
+
 	//Reading (Not Modified)
-	char garbage1 = arr[PAGE_SIZE*11-1] ;
-	char garbage2 = arr[PAGE_SIZE*12-1] ;
+	char garbage1 = __arr__[PAGE_SIZE*11-1] ;
+	char garbage2 = __arr__[PAGE_SIZE*12-1] ;
 	char garbage4,garbage5;
 
 	//Writing (Modified)
 	int i ;
 	for (i = 0 ; i < PAGE_SIZE*10 ; i+=PAGE_SIZE/2)
 	{
-		arr[i] = -1 ;
+		__arr__[i] = -1 ;
 		/*2016: this BUGGY line is REMOVED el7! it overwrites the KERNEL CODE :( !!!*/
-		//*ptr = *ptr2 ;
+		//*__ptr__ = *__ptr2__ ;
 		/*==========================================================================*/
 		//always use pages at 0x801000 and 0x804000
-		garbage4 = *ptr + garbage5;
-		garbage5 = *ptr2 + garbage4;
-		ptr++ ; ptr2++ ;
+		garbage4 = *__ptr__ + garbage5;
+		garbage5 = *__ptr2__ + garbage4;
+		__ptr__++ ; __ptr2__++ ;
 	}
 
 	//===================
 
-	//cprintf("Checking Allocation in Mem & Page File... \n");
+	cprintf_colored(TEXT_cyan, "%~\nChecking Allocation in Mem & Page File... \n");
 	{
 		if( (sys_pf_calculate_allocated_pages() - usedDiskPages) !=  0) panic("Unexpected extra/less pages have been added to page file.. NOT Expected to add new pages to the page file");
 
 		int freePagesAfter = (sys_calculate_free_frames() + sys_calculate_modified_frames());
 		if( (freePages - freePagesAfter) != 0 )
 			panic("Extra memory are wrongly allocated... It's REplacement: expected that no extra frames are allocated. Expected = %d, Actual = %d", 0, (freePages - freePagesAfter));
-
 	}
 
-	cprintf("Congratulations!! test PAGE replacement [ALLOCATION] is completed successfully\n");
+	cprintf_colored(TEXT_light_green, "%~\nCongratulations!! test PAGE replacement [ALLOCATION] is completed successfully\n");
 	return;
 }

@@ -3,11 +3,16 @@
 #include <inc/lib.h>
 #include <user/air.h>
 
+extern volatile bool printStats;
 void
 _main(void)
 {
+	//disable the print of prog stats after finishing
+	printStats = 0;
+
 	int32 parentenvID = sys_getparentenvid();
 
+	char _agentCapacity[] = "agentCapacity";
 	char _customers[] = "customers";
 	char _custCounter[] = "custCounter";
 	char _flight1Counter[] = "flight1Counter";
@@ -32,6 +37,10 @@ _main(void)
 	char _taircl[] = "taircl";
 	char _taircu[] = "taircu";
 
+	char _flight1Customers[] = "flight1Customers";
+	char _flight2Customers[] = "flight2Customers";
+	char _flight3Customers[] = "flight3Customers";
+
 	// Get the shared variables from the main program ***********************************
 
 	struct Customer * customers = sget(parentenvID, _customers);
@@ -42,8 +51,13 @@ _main(void)
 
 	int* queue_in = sget(parentenvID, _queue_in);
 
-	// *********************************************************************************
+	int* flight1Customers = sget(parentenvID, _flight1Customers);
+	int* flight2Customers = sget(parentenvID, _flight2Customers);
+	int* flight3Customers = sget(parentenvID, _flight3Customers);
 
+	// Get the shared semaphores from the main program ***********************************
+
+	struct semaphore capacity = get_semaphore(parentenvID, _agentCapacity);
 	struct semaphore custCounterCS = get_semaphore(parentenvID, _custCounterCS);
 	struct semaphore clerk = get_semaphore(parentenvID, _clerk);
 	struct semaphore custQueueCS = get_semaphore(parentenvID, _custQueueCS);
@@ -56,42 +70,59 @@ _main(void)
 		custId = *custCounter;
 		//cprintf("custCounter= %d\n", *custCounter);
 		*custCounter = *custCounter +1;
+		repFlightSel:
+		//get random flight
+		flightType = RANDU(1, 4);
+		if(flightType == 1 && *flight1Customers > 0)		(*flight1Customers)--;
+		else if(flightType == 2 && *flight2Customers > 0)	(*flight2Customers)--;
+		else if(flightType == 3 && *flight3Customers > 0)	(*flight3Customers)--;
+		else goto repFlightSel;
 	}
 	signal_semaphore(custCounterCS);
 
-	//wait on one of the clerks
-	wait_semaphore(clerk);
+	//delay for a random time
+	env_sleep(RANDU(100, 10000));
 
-	//enqueue the request
-	flightType = customers[custId].flightType;
-	wait_semaphore(custQueueCS);
+	//enter the agent if there's a space
+	wait_semaphore(capacity);
 	{
-		cust_ready_queue[*queue_in] = custId;
-		*queue_in = *queue_in +1;
-	}
-	signal_semaphore(custQueueCS);
+		//wait on one of the clerks
+		wait_semaphore(clerk);
 
-	//signal ready
-	signal_semaphore(cust_ready);
+		//enqueue the request
+		customers[custId].booked = 0 ;
+		customers[custId].flightType = flightType ;
+		wait_semaphore(custQueueCS);
+		{
+			cust_ready_queue[*queue_in] = custId;
+			*queue_in = *queue_in +1;
+		}
+		signal_semaphore(custQueueCS);
 
-	//wait on finished
-	char prefix[30]="cust_finished";
-	char id[5]; char sname[50];
-	ltostr(custId, id);
-	strcconcat(prefix, id, sname);
-	//sys_waitSemaphore(parentenvID, sname);
-	struct semaphore cust_finished = get_semaphore(parentenvID, sname);
-	wait_semaphore(cust_finished);
+		//signal ready
+		signal_semaphore(cust_ready);
 
-	//print the customer status
-	if(customers[custId].booked == 1)
-	{
-		atomic_cprintf("cust %d: finished (BOOKED flight %d) \n", custId, flightType);
+		//wait on finished
+		char prefix[30]="cust_finished";
+		char id[5]; char sname[50];
+		ltostr(custId, id);
+		strcconcat(prefix, id, sname);
+		//sys_waitSemaphore(parentenvID, sname);
+		struct semaphore cust_finished = get_semaphore(parentenvID, sname);
+		wait_semaphore(cust_finished);
+
+		//print the customer status
+		if(customers[custId].booked == 1)
+		{
+			cprintf("cust %d: finished (BOOKED flight %d) \n", custId, flightType);
+		}
+		else
+		{
+			cprintf("cust %d: finished (NOT BOOKED) \n", custId);
+		}
 	}
-	else
-	{
-		atomic_cprintf("cust %d: finished (NOT BOOKED) \n", custId);
-	}
+	//exit the agent
+	signal_semaphore(capacity);
 
 	//customer is terminated
 	signal_semaphore(custTerminated);

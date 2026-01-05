@@ -26,28 +26,42 @@ void init_channel(struct Channel *chan, char *name)
 // Atomically release lock and sleep on chan.
 // Reacquires lock when awakened.
 // Ref: xv6-x86 OS code
-void sleep(struct Channel *chan, struct spinlock* lk)
+void sleep(struct Channel *chan, struct kspinlock* lk)
 {
-	//TODO: [PROJECT'24.MS1 - #10] [4] LOCKS - sleeps
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
+	//TODO: [PROJECT'25.IM#5] KERNEL PROTECTION: #1 CHANNEL - sleep
+	//Your code is here
+	//Comment the following line
+	//panic("sleep() is not implemented yet...!!");
 
-	acquire_spinlock(&(ProcessQueues.qlock));
-	release_spinlock(lk);
+	//cprintf("sleep was called. \n");
 
-	struct Env *env = get_cpu_proc();
-	env->env_status = ENV_BLOCKED;
-	enqueue(&(chan->queue), env);
-	//cprintf("enqueue : id = %d \n", env->env_id);
+	struct kspinlock* kspinlock_ptr = &(ProcessQueues.qlock);
+	acquire_kspinlock(kspinlock_ptr);
 
-	sched();
-	acquire_spinlock(lk);
-	release_spinlock(&(ProcessQueues.qlock));
+	//cprintf("inside critical section. \n");
 
-	//panic("sleep is not implemented yet");
-	//Your Code is Here...
+	release_kspinlock(lk);
+
+
+	// get current environment
+	struct Env *current_environment_ptr = get_cpu_proc();
+
+	// block current process
+	current_environment_ptr->env_status = ENV_BLOCKED;
+
+	// enqueue the process in channel queue
+	struct Env_Queue* chan_queue_ptr = &(chan->queue);
+	enqueue(chan_queue_ptr, current_environment_ptr);
+
+	sched(); // schedule next process
+
+	acquire_kspinlock(lk);
+
+	release_kspinlock(kspinlock_ptr);
+
+	//cprintf("[sleep done (belbaraka :)]. \n");
 
 }
-
 
 //==================================================
 // 3) WAKEUP ONE BLOCKED PROCESS ON A GIVEN CHANNEL:
@@ -58,19 +72,25 @@ void sleep(struct Channel *chan, struct spinlock* lk)
 // chan MUST be of type "struct Env_Queue" to hold the blocked processes
 void wakeup_one(struct Channel *chan)
 {
-	//TODO: [PROJECT'24.MS1 - #11] [4] LOCKS - wakeup_one
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-	struct Env_Queue *q = &(chan->queue);
-	struct spinlock *mylock = &(ProcessQueues.qlock);
+	//TODO: [PROJECT'25.IM#5] KERNEL PROTECTION: #2 CHANNEL - wakeup_one
+	//Your code is here
+	//Comment the following line
+	//panic("wakeup_one() is not implemented yet...!!");
 
-	acquire_spinlock(mylock);
-	if(queue_size(q) > 0) {
-		sched_insert_ready(dequeue(q));
-	}
+	//cprintf("wakeup_one called. \n");
 
-	release_spinlock(mylock);
-	//panic("wakeup_one is not implemented yet");
-	//Your Code is Here...
+	struct kspinlock *kspin_lock_ptr = &(ProcessQueues.qlock);
+	struct Env_Queue *env_queue = &(chan->queue);
+
+	acquire_kspinlock(kspin_lock_ptr);
+
+	//cprintf("inside the critical section. \n");
+
+	if(queue_size(env_queue) > 0) sched_insert_ready(dequeue(env_queue));
+
+
+	release_kspinlock(kspin_lock_ptr);
+
 }
 
 //====================================================
@@ -81,21 +101,27 @@ void wakeup_one(struct Channel *chan)
 // Ref: xv6-x86 OS code
 // chan MUST be of type "struct Env_Queue" to hold the blocked processes
 
-void wakeup_all(struct Channel *chan) //D
+void wakeup_all(struct Channel *chan)
 {
-	//TODO: [PROJECT'24.MS1 - #12] [4] LOCKS - wakeup_all
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-	struct Env_Queue *q = &(chan->queue);
-	struct spinlock *mylock = &(ProcessQueues.qlock);
+	//TODO: [PROJECT'25.IM#5] KERNEL PROTECTION: #3 CHANNEL - wakeup_all
+	//Your code is here
+	//Comment the following line
+	//panic("wakeup_all() is not implemented yet...!!");
 
-	//init_spinlock(mylock,"mylock");
-	acquire_spinlock(mylock);
-	while(q->lh_last != NULL) {
-		sched_insert_ready(dequeue(q));
+	//cprintf("wakeup_all called. \n");
+
+	struct Env_Queue *env_q_ptr = &(chan->queue);
+	struct kspinlock *kspinlock_ptr = &(ProcessQueues.qlock);
+
+	acquire_kspinlock(kspinlock_ptr); // critical section for queue protection
+
+	while(env_q_ptr->lh_last != NULL) {
+		sched_insert_ready(dequeue(env_q_ptr));
 	}
-	release_spinlock(mylock);
 
-	//panic("wakeup_all is not implemented yet");
-	//Your Code is Here...
+	release_kspinlock(kspinlock_ptr); // critical section for queue protection
+
+	//cprintf("wakeup_all finished it's work. \n");
 
 }
+

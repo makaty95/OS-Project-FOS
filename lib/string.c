@@ -1,7 +1,6 @@
 // Basic string routines.  Not hardware optimized, but not shabby.
 
 #include <inc/string.h>
-#include <inc/assert.h>
 
 int
 strlen(const char *s)
@@ -105,16 +104,36 @@ strfind(const char *s, char c)
 }
 
 
+// *************** The faster implementation of memset & memcpy is implemented by *************
+// ****************** Team80 (Yahia Khaled, Malek Ahmed et al) - FCIS'24-25 *******************
 void *
 memset(void *v, int c, uint32 n)
 {
-	char *p;
-	int m;
+//	char *p;
+//	int m;
+//
+//	p = v;
+//	m = n;
+//	while (--m >= 0)
+//		*p++ = c;
 
-	p = v;
-	m = n;
-	while (--m >= 0)
-		*p++ = c;
+	/*Faster Implementation*/
+	uint64* p64 = (uint64*)v;
+	if(n >= 8){
+		uint64 data_block = c;
+		data_block |= data_block << 8;
+		data_block |= data_block << 16;
+		data_block |= data_block << 32;
+
+		while(n >= 8)
+			*p64++ = data_block, n -= 8;
+	}
+
+	if(n){
+		uint8* p8 = (uint8*)p64;
+		while (n-- > 0)
+			*p8++ = (uint8)c;
+	}
 
 	return v;
 }
@@ -122,14 +141,31 @@ memset(void *v, int c, uint32 n)
 void *
 memcpy(void *dst, const void *src, uint32 n)
 {
-	const char *s;
-	char *d;
+	//	const char *s;
+	//	char *d;
+	//
+	//	s = src;
+	//	d = dst;
+	//	while (n-- > 0)
+	//		*d++ = *s++;
+	/*Faster Implementation*/
+	uint64* s64 = (uint64*)src;
+	uint64* d64 = (uint64*)dst;
+	if(n >= 8){
+		while(n >= 8){
+			*d64 = *s64;
+			n -= 8;
+			++s64;
+			++d64;
+		}
+	}
 
-	s = src;
-	d = dst;
-	while (n-- > 0)
-		*d++ = *s++;
-
+	if(n){
+		uint8* s8 = (uint8*)s64;
+		uint8* d8 = (uint8*)d64;
+		while (n-- > 0)
+			*d8++ = *s8++;
+	}
 	return dst;
 }
 
@@ -315,7 +351,14 @@ int strsplit(char *string, char *SPLIT_CHARS, char **argv, int * argc)
 
 char* str2lower(char *dst, const char *src)
 {
-	//[PROJECT]
-	panic("str2lower is not implemented yet!");
-	return NULL;
+	char* ret = dst;
+	for (int i = 0; i < strlen(src); ++i)
+	{
+		dst[i] = src[i] ;
+		if (src[i] >= 'A' && src[i] <= 'Z')
+		{
+			dst[i] += 32 ;
+		}
+	}
+	return ret;
 }

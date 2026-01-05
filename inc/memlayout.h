@@ -81,7 +81,8 @@
  *    PFTEMP ------->  |       Empty Memory (*)       |        PTSIZE
  *                     |                              |
  *    UTEMP -------->  +------------------------------+ 0x00400000      --+
- *                     |       Empty Memory (*)       |                   |
+ *    PGFLTEMP ------->|          PAGE_SIZE       	  |                   |
+ *    				   |       Empty Memory (*)       |                   |
  *                     | - - - - - - - - - - - - - - -|                   |
  *                     |  User STAB Data (optional)   |                 PTSIZE
  *    USTABDATA ---->  +------------------------------+ 0x00200000        |
@@ -149,6 +150,8 @@
 // Used for temporary page mappings for the user page-fault handler
 // (should not conflict with other temporary page mappings)
 #define PFTEMP		(UTEMP + PTSIZE - PAGE_SIZE)
+// 2024: Used for temporary page mappings for the page file (update function)
+#define PGFLTEMP	(UTEMP - PAGE_SIZE)
 // The location of the user-level STABS data structure
 #define USTABDATA	(PTSIZE / 2)
 
@@ -166,9 +169,9 @@
 #define USER_PAGES_WS_MAX (USER_PAGES_WS_START + sizeof(struct WorkingSetElement) * USER_TOP/PAGE_SIZE)
 
 #define USTACKBOTTOM (ROUNDUP(USER_PAGES_WS_MAX, PAGE_SIZE))
-#define PGFLTEMP (UTEMP-PAGE_SIZE)
 
-//2022S
+
+//2022
 #define USER_DYN_BLKS_ARRAY 0 //(ROUNDDOWN(USER_HEAP_START - (sizeof(struct MemBlock) * NUM_OF_UHEAP_PAGES), PAGE_SIZE) - PAGE_SIZE)
 
 #ifndef __ASSEMBLER__
@@ -181,7 +184,7 @@
  * One result of treating the page directory as a page table is that all page_table_entries
  * can be accessed through a "virtual page table" at virtual address VPT (to
  * which vpt is set in entry.S).  The page_table_entry for page number N is stored in
- * vpt[N].  (It' worth drawing a diagram of this!)
+ * vpt[N].  (It's worth drawing a diagram of this!)
  *
  * A second consequence is that the contents of the current page directory
  * will always be available at virtual address (VPT + (VPT >> PGSHIFT)), to
@@ -190,6 +193,7 @@
 
 extern volatile uint32 vpt[];     // VA of "virtual page table"
 extern volatile uint32 vpd[];     // VA of current page directory
+
 
 /*
  * Frame_Info descriptor structures.
@@ -202,8 +206,6 @@ extern volatile uint32 vpd[];     // VA of current page directory
 LIST_HEAD(FrameInfo_List, FrameInfo);
 typedef LIST_ENTRY(FrameInfo) Page_LIST_entry_t;
 
-
-
 struct FrameInfo {
 	/* free list link */
 	Page_LIST_entry_t prev_next_info;
@@ -213,9 +215,7 @@ struct FrameInfo {
 	// frames allocated at boot time using memory_manager.c's
 	// boot_allocate_space do not have valid reference count fields.
 	uint16 references;
-
 	struct Env *proc;
-	uint32 bufferedVA;
 	unsigned char isBuffered;
 };
 

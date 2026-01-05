@@ -129,13 +129,11 @@ struct name {								\
  * this very LIST_ENTRY, so that if we want to remove this list entry,
  * we can do *le_prev = le_next to update the structure pointing at us.
  */
-
 #define	LIST_ENTRY(type)						\
 struct {								\
 	struct type *le_next;	/* next element */			\
-	struct type *le_prev;	/* ptr to prev element */	   \
+	struct type *le_prev;	/* ptr to prev element */	\
 }
-
 
 /*
  * List functions.
@@ -184,9 +182,15 @@ struct {								\
 //TODO: Warning CANNOT BE USED AS NESTED LOOP because of the temp ___ptr_next, NEEDS MODIFICATION
 #define LIST_FOREACH(var, head)					\
 	for ((var) = LIST_FIRST((head));				\
-	( (head)->___ptr_next = LOOP_LIST_NEXT((var))) || (var);							\
+	((head)->___ptr_next = LOOP_LIST_NEXT((var))) || (var);			\
 	(var) = (head)->___ptr_next)
 
+//TODO: 2025 - Safe to use this version of LIST_FOREACH
+#define LIST_FOREACH_SAFE(var, head, type)					\
+	struct type *___ptr_next; \
+	for ((var) = LIST_FIRST((head));				\
+	(___ptr_next = LOOP_LIST_NEXT((var))) || (var);			\
+	(var) = ___ptr_next)
 /*
  * Reset the list named "head" to the empty list.
  */

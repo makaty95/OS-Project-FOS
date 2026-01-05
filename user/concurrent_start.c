@@ -5,7 +5,7 @@ void
 _main(void)
 {
 	char *str ;
-	sys_createSharedObject("cnc1", 512, 1, (void*) &str);
+	sys_create_shared_object("cnc1", 512, 1, (void*) &str);
 
 	struct semaphore cnc1 = create_semaphore("cnc1", 1);
 	struct semaphore depend1 = create_semaphore("depend1", 0);

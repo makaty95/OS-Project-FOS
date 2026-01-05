@@ -16,7 +16,7 @@
 //==================================================================================//
 //============================== GIVEN FUNCTIONS ===================================//
 //==================================================================================//
-struct Share* get_share(int32 ownerID, char* name);
+
 //===========================
 // [1] INITIALIZE SHARES:
 //===========================
@@ -25,24 +25,63 @@ void sharing_init()
 {
 #if USE_KHEAP
 	LIST_INIT(&AllShares.shares_list) ;
-	init_spinlock(&AllShares.shareslock, "shares lock");
+	init_kspinlock(&AllShares.shareslock, "shares lock");
+	//init_sleeplock(&AllShares.sharessleeplock, "shares sleep lock");
+#else
+	panic("not handled when KERN HEAP is disabled");
+#endif
+}
+
+//=========================
+// [2] Find Share Object:
+//=========================
+//Search for the given shared object in the "shares_list"
+//Return:
+//	a) if found: ptr to Share object
+//	b) else: NULL
+struct Share* find_share(int32 ownerID, char* name)
+{
+#if USE_KHEAP
+	struct Share * ret = NULL;
+	bool wasHeld = holding_kspinlock(&(AllShares.shareslock));
+	if (!wasHeld)
+	{
+		acquire_kspinlock(&(AllShares.shareslock));
+	}
+	{
+		struct Share * shr ;
+		LIST_FOREACH(shr, &(AllShares.shares_list))
+		{
+			//cprintf("shared var name = %s compared with %s\n", name, shr->name);
+			if(shr->ownerID == ownerID && strcmp(name, shr->name)==0)
+			{
+				//cprintf("%s found\n", name);
+				ret = shr;
+				break;
+			}
+		}
+	}
+	if (!wasHeld)
+	{
+		release_kspinlock(&(AllShares.shareslock));
+	}
+	return ret;
 #else
 	panic("not handled when KERN HEAP is disabled");
 #endif
 }
 
 //==============================
-// [2] Get Size of Share Object:
+// [3] Get Size of Share Object:
 //==============================
-int getSizeOfSharedObject(int32 ownerID, char* shareName)
+int size_of_shared_object(int32 ownerID, char* shareName)
 {
-	//[PROJECT'24.MS2] DONE
 	// This function should return the size of the given shared object
 	// RETURN:
 	//	a) If found, return size of shared object
 	//	b) Else, return E_SHARED_MEM_NOT_EXISTS
 	//
-	struct Share* ptr_share = get_share(ownerID, shareName);
+	struct Share* ptr_share = find_share(ownerID, shareName);
 	if (ptr_share == NULL)
 		return E_SHARED_MEM_NOT_EXISTS;
 	else
@@ -51,525 +90,222 @@ int getSizeOfSharedObject(int32 ownerID, char* shareName)
 	return 0;
 }
 
-
-
-//===========================================================
-
-
 //==================================================================================//
 //============================ REQUIRED FUNCTIONS ==================================//
 //==================================================================================//
-//===========================
-// [1] Create frames_storage:
-//===========================
-// Create the frames_storage and initialize it by 0
-inline struct FrameInfo** create_frames_storage(int numOfFrames)
-{
-	//TODO: [PROJECT'24.MS2 - #16] [4] SHARED MEMORY - create_frames_storage()
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-	//panic("create_frames_storage is not implemented yet");
-	//Your Code is Here...
-
-	//cprintf("-------------create_frames_storage called------------\n");
-	struct FrameInfo** frames_arr = (struct FrameInfo**)kmalloc(sizeof(struct FrameInfo*)*numOfFrames);
-
-
-   if(frames_arr == NULL) {
-	   return NULL;
-   }
-
-   for(int i = 0 ;i<numOfFrames ; i++) { // i = 2
-
-	   frames_arr[i] = NULL;
-   }
-
-   return frames_arr;
-}
-
 
 //=====================================
-// [2] Alloc & Initialize Share Object:
+// [1] Alloc & Initialize Share Object:
 //=====================================
 //Allocates a new shared object and initialize its member
 //It dynamically creates the "framesStorage"
 //Return: allocatedObject (pointer to struct Share) passed by reference
-struct Share* create_share(int32 ownerID, char* shareName, uint32 size, uint8 isWritable)
+struct Share* alloc_share(int32 ownerID, char* shareName, uint32 size, uint8 isWritable)
 {
-	//TODO: [PROJECT'24.MS2 - #16] [4] SHARED MEMORY - create_share()
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-	//panic("create_share is not implemented yet");
-	//Your Code is Here...
-//	cprintf("---------------create_share called-------------\n");
-//	cprintf("flag create_share 1 size = %d\n" , size);
-//	cprintf("flag create_share 2\n");
+	//TODO: [PROJECT'25.IM#3] SHARED MEMORY - #1 alloc_share
+	//Your code is here
+	//Comment the following line
+	// panic("alloc_share() is not implemented yet...!!");
 
-	ownerID &= (~(1<<31));
 
-	struct Share *share_obj = (struct Share *)kmalloc(sizeof(struct Share));
+	// Allocate needed memory in kernel heap
+	struct Share *shared_object_ptr = (struct Share*) kmalloc(sizeof(struct Share));
 
-	if(share_obj==NULL )
-	{   //cprintf("flag create_share 3\n");
+	if(shared_object_ptr == NULL ) return NULL;
+
+
+	uint32 overall_size = ROUNDUP(size, PAGE_SIZE);
+
+	// fill the object //============================================>
+	uint32 MSK = (1 << 31);
+	shared_object_ptr->ID = ((uint32)shared_object_ptr) & MSK;
+	shared_object_ptr->size = (uint32)size;
+	strcpy(shared_object_ptr->name, shareName);
+	shared_object_ptr->ownerID = ownerID;
+	shared_object_ptr->references = 1;
+	shared_object_ptr->isWritable = isWritable;
+	//============================================>
+
+	uint32 frames_num = overall_size / PAGE_SIZE;
+	uint32 size_to_allocate = sizeof(struct FrameInfo*) * frames_num;
+	struct FrameInfo** frameArray =  (struct FrameInfo**) kmalloc(size_to_allocate);
+
+	// if allocation failed, free the memory we created.
+	if(frameArray == NULL) {
+		kfree((void*) shared_object_ptr);
 		return NULL;
 	}
-	//cprintf("flag create_share 3.5\n");
-	strcpy(share_obj->name, shareName);
-	///cprintf("flag create_share 4\n");
 
-	uint32 total_size = ROUNDUP(size, PAGE_SIZE);
-	share_obj->size = (uint32)size;
-	//cprintf("size %u if eq share_obj->size-> %d\n", size, share_obj->size);
-	//cprintf("flag create_share 5\n");
-	share_obj->isWritable = isWritable;
-	//cprintf("flag create_share 6\n");
-	share_obj->references = 1;
-	//cprintf("flag create_share 7\n");
-
-	//mask MSB to 1 0000000000000000010010101
-	// 			  0 1111111111111111111111111
-
-
-	share_obj->ID = ownerID;
-	//cprintf("flag create_share 8\n");
-	uint32 number_of_pages = total_size / PAGE_SIZE;
-	//cprintf("flag create_share 9\n");
-	//cprintf("numframes = %d\n", number_of_pages);
-	struct FrameInfo** frames_arr = create_frames_storage((int)number_of_pages);
-	if(frames_arr == NULL) {
-		kfree((void *)share_obj);
-		return NULL;
-	}
-	share_obj->framesStorage = frames_arr;
-
-	//cprintf("flag create_share 12\n");
-
-    return share_obj;
-}
-
-//=============================
-// [3] Search for Share Object:
-//=============================
-//Search for the given shared object in the "shares_list"
-//Return:
-//	a) if found: ptr to Share object
-//	b) else: NULL
-struct Share* get_share(int32 ownerID, char* name)
-{
-	//TODO: [PROJECT'24.MS2 - #17] [4] SHARED MEMORY - get_share()
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-	//panic("get_share is not implemented yet");
-	//Your Code is Here..
-	//cprintf("---------get_share called----------------\n");
-
-	ownerID &= (~(1<<31));
-	acquire_spinlock(&AllShares.shareslock);
-	//cprintf("a\n");
-
-	struct Share* it = NULL;
-	LIST_FOREACH(it , &AllShares.shares_list)
-	{
-		//cprintf("b\n");
-		///cprintf("shared: id = %d, name = %s, size = %d\n", it->ID, it->name, it->size);
-		if(it->ID==ownerID  && strcmp(it->name, name) == 0 && strlen(it->name) == strlen(name)) {
-			//cprintf("c\n");
-			release_spinlock(&AllShares.shareslock);
-			//cprintf("d\n");
-			return it;
-		}
-		//cprintf("e\n");
-	}
-	//cprintf("f\n");
-	release_spinlock(&AllShares.shareslock);
-	//cprintf("g\n");
-	return NULL;
-
+	shared_object_ptr->framesStorage = frameArray;
+	return shared_object_ptr;
 
 }
+
 
 //=========================
 // [4] Create Share Object:
 //=========================
-uint32 smis_free_page(uint32 page_va, struct Env* env) {
-	// page_va is the virtual address within some page , could be with offset doesn't matter.
-
-	uint32* ptr_page_table;
-	int status = get_page_table(env->env_page_directory, page_va, &ptr_page_table);
-	if(status == TABLE_NOT_EXIST) {
-		ptr_page_table = (uint32*)create_page_table(env->env_page_directory, page_va);
-	}
-
-	uint32 mask = (1 << 10);
-	return !((ptr_page_table[PTX(page_va)]&mask)); // if 0 its not marked , if other it is set
-}
-
-
-void sm_mark_page(uint32 page_va, struct Env* env, uint32 state) {
-	// page_va is the virtual address within some page , could be with offset doesn't matter.
-
-	uint32* ptr_page_table;
-	int status = get_page_table(env->env_page_directory, page_va, &ptr_page_table);
-	if(status == TABLE_NOT_EXIST) {
-		cprintf("creating page table\n");
-		ptr_page_table = (uint32*)create_page_table(env->env_page_directory, page_va);
-	}
-
-
-	if(state == FREE_PAGE) {
-		//cprintf("%p free done\n", (void*)page_va);
-		ptr_page_table[PTX(page_va)] &= (~(1<<10));
-		ptr_page_table[PTX(page_va)] &= (~(1<<11));
-		return;
-	}
-
-	ptr_page_table[PTX(page_va)] |= (1 << 10);
-	//cprintf("%p mark done\n", (void*)page_va);
-	if(state == PAGE_MARK_START) {
-		//cprintf("%p mark start done\n", (void*)page_va);
-		ptr_page_table[PTX(page_va)] |= (1<<11);
-		//cprintf("address %x marked start\n", page_va);
-	}
-
-	//cprintf("page at address %x marked\n", page_va);
-}
-
-uint32 smget_pgallocation_address(uint32 size, struct Env* e) {
-
-
-		uint32 it_start = e->hlimit+PAGE_SIZE;
-		uint32* page_directory = e->env_page_directory;
-		uint32 pg_alloc_last = e->pgalloc_last;
-
-		uint32 it = it_start;
-		uint32 curSize = 0;
-		uint32 pgalloc_ptr = 0;
-
-		//cprintf("searchig for space = %umb, sratring from %p to %p\n",(size/(1<<20)), (void*)it_start, (void*)pg_alloc_last);
-		for (; curSize < size && it < pg_alloc_last; it += PAGE_SIZE) {
-
-			if (smis_free_page(it, e)) { // if free page
-				if(curSize == 0) {
-					pgalloc_ptr = it;
-				}
-				curSize += PAGE_SIZE;
-
-			}else {	// if marked for another space
-				curSize = 0;
-				pgalloc_ptr = 0;
-			}
-		}
-
-		// if exist some free pages before pgalloc_last which could be used.
-		if(pgalloc_ptr != 0 && curSize >= size) {
-			return pgalloc_ptr;
-		}
-
-		return pg_alloc_last;
-
-}
-
-int createSharedObject(int32 ownerID, char* shareName, uint32 size, uint8 isWritable, void* virtual_address)
+int create_shared_object(int32 ownerID, char* shareName, uint32 size, uint8 isWritable, void* virtual_address)
 {
-	//TODO: [PROJECT'24.MS2 - #19] [4] SHARED MEMORY [KERNEL SIDE] - createSharedObject()
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-	//panic("createSharedObject is not implemented yet");
-	//Your Code is Here...
-    //acquire_spinlock(&(AllShares.shareslock));
-	//cprintf("---------createSharedObject called size = %u, nae = %s----------------\n", size, shareName);
+	//TODO: [PROJECT'25.IM#3] SHARED MEMORY - #3 create_shared_object
+	//Your code is here
+	//Comment the following line
+	//panic("create_shared_object() is not implemented yet...!!");
+
 	struct Env* myenv = get_cpu_proc(); //The calling environment
 
+	// This function should create the shared object at the given virtual address with the given size
+	// and return the ShareObjectID
+	// RETURN:
+	//	a) ID of the shared object (its VA after masking out its msb) if success
+	//	b) E_SHARED_MEM_EXISTS if the shared object already exists
+	//	c) E_NO_SHARE if failed to create a shared object
 
-	ownerID &= (~(1<<31));
 
-	// if the object already exists.
-	if(get_share(ownerID, shareName) != NULL) {
+	// check if it already exists
+	if(find_share(ownerID, shareName) != NULL) {
 		return E_SHARED_MEM_EXISTS;
 	}
 
-	// masking the id to +ve
-
-    int32 ownderid = ownerID;
-    uint32 total_size = (ROUNDUP(size, PAGE_SIZE)/PAGE_SIZE)*PAGE_SIZE;
-
-    // getting start address.
-	uint32  ret_add = smget_pgallocation_address(total_size , myenv);
+	uint32 roundedSize = (ROUNDUP(size, PAGE_SIZE) / PAGE_SIZE) * PAGE_SIZE;
+	uint32 pages = ROUNDUP(roundedSize, PAGE_SIZE) / PAGE_SIZE;
 
 
-	if (ret_add == myenv->pgalloc_last) {
-		if((myenv->pgalloc_last + total_size) > (uint32)USER_HEAP_MAX) {
-			//cprintf("damn, there is not allocation space to be allocated in uheap\n");
+	struct Share* shareObj = alloc_share(ownerID , shareName , roundedSize , isWritable);
+	if(shareObj == NULL) return E_NO_SHARE;
+
+
+	uint32 ptr_va = (uint32)virtual_address;
+	int free_idx = 0;
+
+	// allocating and mapping all the pages
+	for (int i = 0 ; i < pages; i++, ptr_va += PAGE_SIZE, free_idx++) {
+
+
+		struct FrameInfo *myFrame = NULL;
+		int state = allocate_frame(&myFrame);
+		if(myFrame == NULL) {
+
+			// delete all i allocated and return no_share
+			uint32 base_address = (uint32)virtual_address;
+			while(ptr_va >= base_address) {
+				ptr_va -= PAGE_SIZE;
+
+				free_idx--;
+				shareObj->framesStorage[free_idx] = NULL;
+
+				// unmap memory
+				unmap_frame((myenv->env_page_directory), ptr_va);
+
+			}
+
 			return E_NO_SHARE;
 		}
 
-		myenv->pgalloc_last += total_size;
-	}
-
-	// the address to be returned
-	void* ret = (void*)ret_add;
-
-//	uint32 end_ptr = total_size + ret_add;
-//    if(end_ptr > USER_HEAP_MAX) {
-//		return E_NO_SHARE;
-//	}
-
-
-	struct Share* cur_share = create_share(ownerID , shareName , total_size , isWritable);
-	if(cur_share == NULL)
-	{
-		return E_NO_SHARE;
-	}
-
-	uint32 num_of_pages = ROUNDUP(total_size,PAGE_SIZE)/PAGE_SIZE;
-	uint32 it = ret_add;
-	int i = 0;
-//	cprintf("isWritable == %x\n" , isWritable);
-
-	// allocating pages
-	for (i = 0 ; i < num_of_pages; i++, it += PAGE_SIZE) {
-
-
-		struct FrameInfo *newFrame = NULL;
-		int state = allocate_frame(&newFrame);
-		if(newFrame == NULL) {
-			return E_NO_SHARE;
-		}
-
-		state = map_frame(myenv->env_page_directory, newFrame, it, PERM_WRITEABLE|PERM_USER|PERM_PRESENT);
-		if (state != 0) {
-			return E_NO_SHARE;
-		}
-
-		sm_mark_page(it, myenv, PAGE_MARKED);
-		cur_share->framesStorage[i] = newFrame;
-//		cprintf("flag sys_smalloc 14.5 success\n");
+		uint32 permissions = PERM_WRITEABLE | PERM_USER | PERM_PRESENT;
+		state = map_frame(myenv->env_page_directory, myFrame, ptr_va, permissions);
+		if (state != 0) return E_NO_SHARE;
+		else shareObj->framesStorage[i] = myFrame;
 
 	}
-	sm_mark_page(ret_add, myenv, PAGE_MARK_START);
-	//cprintf("flag sys_smalloc 15\n");
-
-	// insert the shared object inside the list
-
-	acquire_spinlock(&AllShares.shareslock);
-	LIST_INSERT_TAIL(&AllShares.shares_list , cur_share);
-	release_spinlock(&AllShares.shareslock);
 
 
+#if USE_KHEAP
 
-	myenv->sharedObjectsCounter++;
+	acquire_kspinlock(&AllShares.shareslock);
+	// critical section
+	LIST_INSERT_TAIL(&AllShares.shares_list , shareObj);
+	release_kspinlock(&AllShares.shareslock);
 
-	myenv->shr_returned_address = ret;
+#endif
 
-	return (int)cur_share->ID;
+	return shareObj->ID;
+
 }
 
 
 //======================
 // [5] Get Share Object:
 //======================
-int getSharedObject(int32 ownerID, char* shareName, void* virtual_address)
-{
-	//TODO: [PROJECT'24.MS2 - #21] [4] SHARED MEMORY [KERNEL SIDE] - getSharedObject()
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-	//panic("getSharedObject is not implemented yet");
-	//Your Code is Here...
-
-	//cprintf("---------getSharedObject called name = %s----------------\n", shareName);
-
-	ownerID &= (~(1<<31));
+int get_shared_object(int32 ownerID, char* shareName, void* virtual_address) {
+	//TODO: [PROJECT'25.IM#3] SHARED MEMORY - #5 get_shared_object
+	//Your code is here
+	//Comment the following line
+	//panic("get_shared_object() is not implemented yet...!!");
 
 	struct Env* myenv = get_cpu_proc(); //The calling environment
 
-    struct Share* cur_share = get_share(ownerID, shareName);
-    //cprintf("after get_share\n");
-    if(cur_share == NULL) {
-    	return E_SHARED_MEM_NOT_EXISTS ;
-    }
+	// 	This function should share the required object in the heap of the current environment
+	//	starting from the given virtual_address with the specified permissions of the object: read_only/writable
+	// 	and return the ShareObjectID
+	// RETURN:
+	//	a) ID of the shared object (its VA after masking out its msb) if success
+	//	b) E_SHARED_MEM_NOT_EXISTS if the shared object is not exists
 
-    //cprintf("orig size: %d\n", cur_share->size);
-    uint32 sz = (uint32)(cur_share->size);
+	struct Share* share_object = find_share(ownerID, shareName);
+	if (share_object == NULL)
+		return E_SHARED_MEM_NOT_EXISTS;
 
+	uint32 size__ = (uint32) (share_object->size);
+	uint32 totalSize = ROUNDUP(size__, PAGE_SIZE);
 
-    uint32 total_size = ROUNDUP(sz, PAGE_SIZE); //
-    //cprintf("size: %u, total_size: %u\n", sz, total_size);
+	uint32 VA = (uint32) virtual_address;
+	uint32 CNT = totalSize / PAGE_SIZE;
+	uint32 perms_to_set = (
+			share_object->isWritable ?
+					PERM_WRITEABLE | PERM_PRESENT : PERM_PRESENT);
 
-	uint32  ret_add = smget_pgallocation_address(total_size , myenv);
-	//cprintf("after smget_pgallocation_address call\n");
-
-	if (ret_add == myenv->pgalloc_last) {
-		//cprintf("it = last\n");
-
-		if((myenv->pgalloc_last + total_size) > (uint32)USER_HEAP_MAX) {
-			//cprintf("returned not share\n");
-			return E_NO_SHARE;
-		}
-	    myenv->pgalloc_last += total_size;
+	for (int i = 0; i < CNT; i++, VA += PAGE_SIZE) {
+		int32 state = map_frame(myenv->env_page_directory,
+				share_object->framesStorage[i], VA, perms_to_set | PERM_USER);
 	}
 
-//	cprintf("resuming\n");
+	share_object->references++;
+	return share_object->ID;
 
-
-    uint32 permm = (cur_share->isWritable ? PERM_WRITEABLE|PERM_PRESENT : PERM_PRESENT);
-
-    uint32 it = (uint32)ret_add;
-    int32 arr_sz = sizeof(cur_share->framesStorage)/sizeof(cur_share->framesStorage[0]);
-    uint32 pages = total_size / PAGE_SIZE;
-    //cprintf("pages: %u, arr_sz: %d\n", pages, arr_sz);
-
-    for(int i = 0 ; i < pages ; i++, it += PAGE_SIZE) {
-    	int32 state = map_frame(myenv->env_page_directory, cur_share->framesStorage[i], it, permm|PERM_USER);
-		sm_mark_page(it, myenv, PAGE_MARKED);
-    }
-
-    sm_mark_page(ret_add, myenv, PAGE_MARK_START);
-
-	 cur_share->references++;
-	 myenv->get_shr_returned_address = (void*)ret_add;
-//	 cprintf("(syscall)get_shr_returned_address: %p\n", (void*)ret_add);
-//	 cprintf("done done\n");
-	 return cur_share->ID;
 }
 
 //==================================================================================//
 //============================== BONUS FUNCTIONS ===================================//
 //==================================================================================//
-
-//==========================
-// [B1] Delete Share Object:
-//==========================
+//=========================
+// [1] Delete Share Object:
+//=========================
 //delete the given shared object from the "shares_list"
 //it should free its framesStorage and the share object itself
-
-//helper function
-struct Share* find_share(void *startVA , struct Env* e){
-
-	acquire_spinlock(&AllShares.shareslock);
-	uint32* pg_table = NULL;
-	struct FrameInfo* ptr_frame =get_frame_info(e->env_page_directory ,(uint32) startVA , &pg_table);
-	struct Share* it= NULL;
-
-    LIST_FOREACH(it , &AllShares.shares_list){
-    	int32 sz =sizeof(it->framesStorage)/sizeof(it->framesStorage[0]);
-    	for(int i =0 ; i<sz ; i++){
-    		if(ptr_frame==it->framesStorage[i]){
-    			//cprintf("\nfound frame successfully\n");
-    			release_spinlock(&AllShares.shareslock);
-    			return it;
-    		}
-    	}
-    }
-
-
-    release_spinlock(&AllShares.shareslock);
-    return  NULL;
-}
 void free_share(struct Share* ptrShare)
 {
-	//TODO: [PROJECT'24.MS2 - BONUS#4] [4] SHARED MEMORY [KERNEL SIDE] - free_share()
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-	//panic("free_share is not implemented yet");
-	//Your Code is Here...
-
-	    acquire_spinlock(&AllShares.shareslock);
-		LIST_REMOVE(&AllShares.shares_list , ptrShare);
-		release_spinlock(&AllShares.shareslock);
-		//delete frames
-//		int32 sz = sizeof(ptrShare->framesStorage)/sizeof(ptrShare->framesStorage[0]);
-//		for(int i = 0 ;i<sz ; i++)
-//		{
-//			ptrShare->framesStorage[i]=NULL;
-//		}
-		//delete shared object from kernel heap
-
-		kfree((void *)ptrShare);
-		kfree((void *)ptrShare->framesStorage);
-
+	//TODO: [PROJECT'25.BONUS#5] EXIT #2 - free_share
+	//Your code is here
+	//Comment the following line
+	panic("free_share() is not implemented yet...!!");
 }
-//========================
-// [B2] Free Share Object:
-//========================
-int freeSharedObject(int32 sharedObjectID, void *startVA)
+
+
+//=========================
+// [2] Free Share Object:
+//=========================
+int delete_shared_object(int32 sharedObjectID, void *startVA)
 {
-	//TODO: [PROJECT'24.MS2 - BONUS#4] [4] SHARED MEMORY [KERNEL SIDE] - freeSharedObject()
-	//COMMENT THE FOLLOWING LINE BEFORE START CODING
-	//panic("freeSharedObject is not implemented yet");
-	//Your Code is Here...
+	//TODO: [PROJECT'25.BONUS#5] EXIT #2 - delete_shared_object
+	//Your code is here
+	//Comment the following line
+	panic("delete_shared_object() is not implemented yet...!!");
 
-	struct Env* myenv =get_cpu_proc();
+	struct Env* myenv = get_cpu_proc(); //The calling environment
 
-	//step1 find your share object
-	struct Share* cur_share =find_share(startVA , myenv);
-	if(cur_share==NULL)
-		return 0;
+	// This function should free (delete) the shared object from the User Heapof the current environment
+	// If this is the last shared env, then the "frames_store" should be cleared and the shared object should be deleted
+	// RETURN:
+	//	a) 0 if success
+	//	b) E_SHARED_MEM_NOT_EXISTS if the shared object is not exists
 
-	//step2 unmap frames
-
-	uint32 num_of_frames = (ROUNDUP(cur_share->size, PAGE_SIZE)/PAGE_SIZE);
-	uint32 it =(uint32)startVA;
-
-	uint32 *ptr_page_table = NULL;
-	struct FrameInfo* frame_info_ptr = get_frame_info(myenv->env_page_directory, it, &ptr_page_table);
-
-	for(int i = 0 ;i<num_of_frames ; i++ , it+=PAGE_SIZE){
-
-		struct FrameInfo* frame_info_ptr = get_frame_info(myenv->env_page_directory, it, &ptr_page_table);
-		if(frame_info_ptr != NULL) {
-
-			unmap_frame(myenv->env_page_directory, it);
-			sm_mark_page(it ,myenv ,FREE_PAGE);
-		}
-
-			int empty = 1;
-			for(int i = 0 ;i<1024 ; i++)
-			{
-				if(ptr_page_table[i]!=0){
-
-					empty=0;
-					break;
-				}
-			}
-			if(empty){
-
-				struct FrameInfo* frame_info_ptr = get_frame_info(myenv->env_page_directory, (uint32)ptr_page_table, &ptr_page_table);
-				free_frame(frame_info_ptr);
-				pd_clear_page_dir_entry(myenv->env_page_directory,(uint32)it);
-			}
-
-	}
-
-	//step3 remove page table if empty
-
-//	frame_info_ptr = get_frame_info(myenv->env_page_directory, (uint32)ptr_page_table, &ptr_page_table);
-//	if(frame_info_ptr!=NULL){
-//		int empty = 1;
-//		for(int i = 0 ;i<1024 ; i++)
-//		{
-//			if(ptr_page_table[i]!=0){
-//				empty=0;
-//				break;
-//			}
-//		}
-//		if(empty){
-//			//cprintf("\npd_clear_page_dir_entry\n");
-//			struct FrameInfo* frame_info_ptr = get_frame_info(myenv->env_page_directory, (uint32)ptr_page_table, &ptr_page_table);
-//			free_frame(frame_info_ptr);
-//			pd_clear_page_dir_entry(myenv->env_page_directory,(uint32)it);
-//		}
-//	}
-
-
-    //cprintf("\nref ======= %d\n" , cur_share->references);
-	//step4 decrement refrences
-	cur_share->references--;
-
-	//step5 last share remove it
-	if(cur_share->references==0){
-		//cprintf("\nfree_share\n");
-		free_share(cur_share);
-	}
-
-	//step6 is already completed by unmap and free frames;
-
-
-
-
-return 0;
+	// Steps:
+	//	1) Get the shared object from the "shares" array (use get_share_object_ID())
+	//	2) Unmap it from the current environment "myenv"
+	//	3) If one or more table becomes empty, remove it
+	//	4) Update references
+	//	5) If this is the last share, delete the share object (use free_share())
+	//	6) Flush the cache "tlbflush()"
 
 }

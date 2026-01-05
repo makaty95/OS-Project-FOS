@@ -1,0 +1,52 @@
+* [33m870e01d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32muheap-shmem[m[33m)[m shared memory done
+*   [33m0047864[m Merge branch 'shared-mem' into uheap-shmem
+[32m|[m[33m\[m  
+[32m|[m * [33mbc61d24[m[33m ([m[1;32mshared-mem[m[33m)[m funcs done: alloc_share, smalloc, create_shared_object
+* [33m|[m [33ma1fb7f7[m[33m ([m[1;32muser-heap[m[33m)[m user heap module done
+* [33m|[m [33mcd59a75[m updating test files
+[33m|[m [33m|[m * [33m2f06ff5[m[33m ([m[1;32mcpu-scheduler[m[33m)[m cpu-scheduler code
+[33m|[m [33m|[m[33m/[m  
+[33m|[m[33m/[m[33m|[m   
+[33m|[m [33m|[m * [33ma6e7fcc[m[33m ([m[1;32mkernel-protection[m[33m)[m kernel protection done
+[33m|[m [33m|[m[33m/[m  
+[33m|[m[33m/[m[33m|[m   
+[33m|[m [33m|[m * [33m2def841[m[33m ([m[1;32mbonuses[m[33m)[m initial implementation of env_free
+[33m|[m [33m|[m * [33m0cd27eb[m adding krealloc
+[33m|[m [33m|[m[33m/[m  
+[33m|[m[33m/[m[33m|[m   
+* [33m|[m [33m4e237c3[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m, [m[1;32mindiv-module[m[33m)[m Module 6 Finished.
+* [33m|[m [33m0027902[m individul module 6: first half
+* [33m|[m [33mc535e61[m kernel protection: kmalloc
+* [33m|[m [33m7d8c9f4[m add important fault_handler update
+* [33m|[m [33mcef3465[m added new individual test files
+* [33m|[m [33mf5dbf6c[m[33m ([m[1;32mfault-handler[m[33m)[m Group module #1 finished, Tests passed
+* [33m|[m [33m6ef82fa[m run tpp 22 test passes
+* [33m|[m [33m73a96d4[m run tia 15 test passes
+* [33m|[m [33md03eb06[m[33m ([m[1;32mkheap[m[33m)[m Finalizing kheap module, Sha3bolling the code, all tests run successfully with 100% Eval.
+* [33m|[m [33md65ea59[m kvirtual_addr, kphys_addr done
+* [33m|[m [33m015861a[m kheap free done
+* [33m|[m [33md3a3949[m adding some array for the free function later
+* [33m|[m [33m0c220b0[m Sorry for this bad mistake :(
+[33m|[m[33m/[m  
+* [33m37dee2b[m cleaning, making sure all tests for {dynalloc: init, alloc, kheap alloc: page, blk} pass
+*   [33m3247145[m mergin remote changes
+[1;31m|[m[1;32m\[m  
+[1;31m|[m * [33m103ec0d[m finished kheap->kmalloc function
+[1;31m|[m *   [33m0c0f6b0[m Merge branch 'main' of github.com:Eslam-Radwan/os-project
+[1;31m|[m [1;33m|[m[1;34m\[m  
+[1;31m|[m [1;33m|[m * [33md34dc49[m Dynamic_Allocator
+[1;31m|[m * [1;34m|[m [33m95437fe[m add .vscode to gitignore
+* [1;34m|[m [1;34m|[m [33md10af2d[m finishing allocate_block function
+[1;34m|[m [1;34m|[m[1;34m/[m  
+[1;34m|[m[1;34m/[m[1;34m|[m   
+* [1;34m|[m [33ma9b8ada[m Merge branch 'main' of https://github.com/Eslam-Radwan/os-project
+[1;35m|[m[1;34m\[m[1;34m|[m 
+[1;35m|[m * [33m42dc9dd[m edited README.md
+* [1;36m|[m [33m6821895[m init dynamic allocator function done
+[1;36m|[m[1;36m/[m  
+* [33m5ee1eca[m a small edit
+* [33m7d16399[m adding Module1 test files
+* [33m2323381[m implementing page_fault_handler
+* [33mb9346cd[m Update .gitignore
+* [33m996e201[m added READEME.md
+* [33m2238ea0[m initial commit
